@@ -8,6 +8,26 @@
 <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48 64x64">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <script>
+// What an answer of the machine names for the page to open (AD-017 slice 5): through a link the page is drawn by the
+// panel that looks, and its scripts open only a job's page whose id is a name (no slash, no . or .., no scheme) or a
+// path of this site under the page's prefix (no scheme, no //, no . or .. encoded or not, no backslash or space);
+// anything else is null and nothing is opened
+window.omniaPrefix = {{ (prefix or "") | tojson }};
+window.omniaJobPage = function (id, prefix) {
+  if (prefix === undefined) prefix = window.omniaPrefix;
+  return typeof id === "string" && /^[A-Za-z0-9_][A-Za-z0-9._~@+-]*$/.test(id) ? `${prefix}/jobs/${id}` : null;
+};
+window.omniaPath = function (path, prefix) {
+  if (prefix === undefined) prefix = window.omniaPrefix;
+  if (typeof path !== "string" || /[\u0000-\u0020\u007f\\]/.test(path) || !path.startsWith("/") || path.startsWith("//")) return null;
+  const bare = path.split(/[?#]/, 1)[0];
+  let segments;
+  try { segments = bare.split("/").map(decodeURIComponent); } catch (e) { return null; }
+  if (segments.some((s) => s === "." || s === ".." || /[\u0000-\u0020\u007f\\/]/.test(s))) return null;
+  return !prefix || bare === prefix || bare.startsWith(prefix + "/") ? path : null;
+};
+// to a page the machine's answer named, when it is one of those; else the page again
+window.omniaOpen = function (url) { if (url) location.href = url; else location.reload(); };
 // the theme chosen with the header button, before the page paints; none: the system's
 try { const t = localStorage.getItem("omniacli.theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
 // the login expired: every request of the page's scripts (fetch here, the

@@ -642,7 +642,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
   }
   const errorBox = $("error");
   const wsBase = "{{ prefix }}/api/workspaces/{{ ws.name | urlencode }}/";
-  const jobPage = (id) => { location.href = "{{ prefix }}/jobs/" + id; };
+  const jobPage = (id) => omniaOpen(omniaJobPage(id));
   // a request to the workspace's routes: the answer, or null with the error (in the caller's language) shown in `where`
   async function post(url, body, where) {
     where = where || errorBox;
@@ -944,7 +944,7 @@ dialog .field-help { display: block; font-size: var(--fs-14); margin-top: 4px; l
       if (!data) return;
       // the outcome stays here, with the job that publishes the names a click away
       const job = document.createElement("a");
-      job.href = "{{ prefix }}/jobs/" + data.job; job.textContent = T.seeJob + " ›";
+      job.href = omniaJobPage(data.job) || "#"; job.textContent = T.seeJob + " ›";
       state.replaceChildren(T.certOk.replace("{date}", moment(data.not_after)).replace("{names}", (data.names || []).join(", ") || T.noDns) + " · ", job);
     };
   }

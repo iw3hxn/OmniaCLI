@@ -1953,7 +1953,8 @@ def parse_notify(value, where: str) -> list[str]:
     if not isinstance(value, list) or len(value) > NOTIFY_MAX:
         raise ConfigError(f"{where}: at most {NOTIFY_MAX} addresses or webhook URLs")
     found = [str(v).strip() for v in value if str(v).strip()]
-    bad = [v for v in found if not (NOTIFY_EMAIL.fullmatch(v) or NOTIFY_WEBHOOK.fullmatch(v))]
+    # (an address shown by its site, https://hooks.slack.com/…, is no address: a page sends it back for the one saved)
+    bad = [v for v in found if "…" in v or not (NOTIFY_EMAIL.fullmatch(v) or NOTIFY_WEBHOOK.fullmatch(v))]
     if bad:
         raise ConfigError(f"{where}: {bad[0]!r} is neither an email address nor an https:// URL")
     return list(dict.fromkeys(found))

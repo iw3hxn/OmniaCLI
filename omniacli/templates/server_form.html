@@ -389,7 +389,8 @@ async function formButton(box, role, spec, button) {
     return;
   }
   if (data.job !== undefined) {
-    const url = "{{ prefix }}/jobs/" + data.job;
+    const url = omniaJobPage(data.job);
+    if (!url) { if (tab) tab.close(); return; }
     if (tab) tab.location.href = url; else window.open(url, "_blank") || (location.href = url);
     return;
   }

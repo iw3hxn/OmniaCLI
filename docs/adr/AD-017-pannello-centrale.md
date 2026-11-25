@@ -268,8 +268,13 @@ pagine scritte dal centrale la macchina fornisce solo JSON, inserito con l'autoe
    riga `failed` nel registro. A una richiesta `/api` del browser il centrale chiede `Accept: application/json`, così
    la macchina risponde con il suo motivo e non con la sua pagina d'errore.
 
-   **Cosa passa ancora come HTML della macchina:** dalla fetta 5 solo le pagine che il centrale non scrive: quella
-   di un invito (di chi entra lì) e le pagine proprie di un plugin (`/x/<plugin>/…`); con `pages: machine`, tutto.
+   **Cosa passa ancora come HTML della macchina:** dalla fetta 5 (con la revisione) solo due pagine che il
+   centrale non scrive, con la riga «una pagina della macchina che questo pannello non scrive»: quella di un invito
+   (`/invite/<token>`, di chi entra lì) e le pagine proprie di un plugin (`/x/<plugin>/…`,
+   `centralpages.MACHINE_OWN`); il logo SVG della macchina come immagine (`Content-Security-Policy: sandbox`); con
+   `pages: machine`, tutto. Ogni altro percorso non scritto qui (un'azione, un file) è dato, chiesto come JSON: una
+   risposta HTML lì è la pagina «non trovata» del centrale (404). Prima della revisione passava qualunque percorso
+   non scritto qui (`/links/<m>/evil`).
    Nelle pagine scritte qui (le 12 A, l'istanza, le 14 B, le altre C) l'HTML della macchina passa solo nel ritorno di 17.2
    (con la riga in testa), e solo finché quella macchina non ha mai detto `agent_api ≥ 1`: il valore più alto detto da
    ogni collegamento è tenuto su disco (`link-agents.json`, nel purge). Dopo, se dice meno o non ha il modello della
@@ -590,6 +595,25 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima.
    - Le righe della scheda Database con i loro pulsanti (proposta, replica verso, archivio) non si sono potute aprire
      sul lab: i cluster di lab4 erano fermi. Si è aperta «Replica di un'altra macchina…». Il loro script è quello di
      prima, e dal modello legge solo il prefisso.
+
+   **La revisione di `a460665`** (non pronta: un blocco, due importanti, quattro minori), corretta così:
+   - le bandiere di una consegna e di una ricezione nella pagina del workspace: l'id della ricezione (lo script
+     manda `POST ${PREFIX}/api/handover/<id>/retry|switch|cancel`), quello della consegna e i job dei loro pulsanti
+     sono nomi (`_NAMES_AT`); un id `../../../links/<altro>/…` portava il POST su un'altra macchina;
+   - gli avvisi mostrati con il sito portano un segno (`https://hooks.slack.com/…#a1b2c3d4`, 8 cifre dell'HMAC
+     dell'indirizzo): due webhook sullo stesso sito erano due righe uguali, e togliendo il primo si teneva il primo
+     e si perdeva il secondo. Al salvataggio la riga si legge per segno; un segno che nessuno ha, un sito senza
+     segno, un testo invece di un elenco sono rifiutati con parole (anche in italiano), e nessun indirizzo con «…»
+     si salva (`parse_notify`);
+   - i segni e i `ref` dei webhook di Opzioni sono un HMAC-SHA256 con una chiave della macchina
+     (`webhook-ref.key` accanto al file degli utenti, 600 di OmniaCLI, nel purge), non uno sha-256 che chiunque
+     conosca l'indirizzo può rifare;
+   - l'HTML della macchina passa solo per l'elenco qui sopra; gli script delle pagine scritte qui aprono un job
+     solo se il suo id è un nome (`omniaJobPage`) e una pagina solo se è un percorso sotto il prefisso
+     (`omniaPath`, in `base.html`): i job delle risposte JSON (sezione, scheda Database, bandiere, aggiornamento,
+     nuova istanza, Opzioni, workspace, modulo di un server) e la pagina di una persona di Utenti;
+   - il modulo di un server offre solo i plugin del centrale che la macchina ha (quelli del contratto);
+   - nei test il nome `tokens` non è un segreto solo in cima ai modelli del workspace e di Utenti.
 
    **Dove la fetta si discosta dal piano.**
    - **Una pagina in più, `dashboard_servers`.** Lo script della sezione richiede la tabella delle istanze come HTML

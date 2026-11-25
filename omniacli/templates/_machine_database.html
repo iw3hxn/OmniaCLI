@@ -1017,7 +1017,7 @@
   const percent = (done, total) => (total > 0 ? Math.min(100, Math.floor(100 * done / total)) : null);
   const goTo = (answer, errors) => {
     if (answer.error || !answer.job) { showError(answer.error || T.refused, errors); return false; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
     return true;
   };
   // on the machine that hosts it: what this machine sees (here) and what the primary's machine says (primary)
@@ -1582,7 +1582,7 @@
     toGo.disabled = true;
     const answer = await post(`${ROOT}/api/postgres/replica/to`, {via: VIA, key: toKey(toRow), target: t.target, restart: !!t.restarts});
     if (answer.error || !answer.url) { showError(answer.error || T.refused, errors); toGo.disabled = false; return; }
-    location.href = ROOT + answer.url;
+    omniaOpen(omniaPath(ROOT + answer.url, ROOT));
   }
   toOf("pgt-list").addEventListener("change", toPlan);
   toOf("pgt-cancel").addEventListener("click", () => { toAsked++; toDialog.close(); });
@@ -1705,7 +1705,7 @@
     if (!major || !await window.omniaAsk(fill(T.clusterAsk, {major, storage: offer.storage}), e.currentTarget)) return;
     const answer = await post(`${API}/machine/create`, {major});
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   });
   // a database of another machine on the cluster: who uses it and from where, with what an admin of this machine may do
   const grantList = (row) => row.grants.map((g) => `${g.name} (${g.link}, ${g.address})`).join(", ");
@@ -1734,7 +1734,7 @@
     // of the cluster, or of the promoted copy this machine hosts
     const answer = await post(`${row.where === "replica" ? hostedApi(row) : `${API}/machine/${encodeURIComponent(row.major)}`}/grants/${encodeURIComponent(g.name)}/${what}`);
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   }
   // Add pgvector to PostgreSQL… (README, Odoo Enterprise): the name of this machine typed, it serves productions
   async function addPgvector(row, button) {
@@ -1743,32 +1743,32 @@
       was: row.pgvector.image || "?", n: row.serves.length, list: servedList(row)}), data.here || "", go, T.pgvectorTitle)) return;
     const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/pgvector`, {confirm: data.here || ""});
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   }
   async function closePort(row, button) {
     if (!await window.omniaAsk(fill(T.closePortAsk, {port: row.port, n: row.serves.length, list: servedList(row)}), button)) return;
     const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/port/close`);
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   }
   async function closePortDedicated(row, button) {
     if (!await window.omniaAsk(fill(T.closePortDedicatedAsk, {port: row.port, server: row.server, s: 5}), button)) return;
     const answer = await post(`${API}/machine/${encodeURIComponent(row.pg)}/port/close`);
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   }
   async function removeCluster(row, button) {
     if (!await window.omniaAsk(fill(T.removeAsk, {major: row.major}), button, {danger: true})) return;
     const answer = await post(`${API}/machine/${encodeURIComponent(row.major)}/remove`);
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   }
   // --- the recovery at a minute of the cluster (AD-006): what there is, switched on and off, a full copy now
   const archiveApi = (row) => `${API}/machine/${encodeURIComponent(row.major)}/archive`;
   async function archivePost(row, what, payload, errors) {
     const answer = await post(`${archiveApi(row)}/${what}`, payload);
     if (answer.error || !answer.job) { showError(answer.error || T.refused, errors); return false; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
     return true;
   }
   function archiveBlock(row) {
@@ -1892,7 +1892,7 @@
   async function restartNow(row) {
     const answer = await post(rowApi(row) + "/restart");
     if (answer.error || !answer.job) { showError(answer.error || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   }
   async function cancelRestart(row) {
     const answer = await post(rowApi(row) + "/restart/cancel");
@@ -2103,7 +2103,7 @@
     go.disabled = true;
     const answer = await post(url, payload);
     if (answer.error || !answer.job) { dialogError.textContent = answer.error || T.refused; go.disabled = false; return; }
-    location.href = `${PREFIX}/jobs/${answer.job}`;
+    omniaOpen(omniaJobPage(answer.job, PREFIX));
   }
   go.addEventListener("click", () => {
     if (!current || go.disabled) return;

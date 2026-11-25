@@ -107,9 +107,11 @@ async def test_the_pages(client, env):
     data = (await client.get("/api/servers/srv/test/uptime", headers={"Authorization": AUTH})).json()
     assert data["state"] == "unknown"
     env["settings"].workspaces["acme"] = Workspace("acme", servers=["srv"], members={"dev": "admin"})
-    resp = await client.post("/api/workspaces/acme/notify", headers=POST, json={"notify": "ops@acme.it"})
+    # a list (a text, which a page never sends, is refused: AD-017 slice 5, the review)
+    resp = await client.post("/api/workspaces/acme/notify", headers=POST, json={"notify": ["ops@acme.it"]})
     assert resp.status_code == 200 and env["settings"].workspaces["acme"].notify == ["ops@acme.it"]
-    assert (await client.post("/api/workspaces/acme/notify", headers=POST, json={"notify": "nope"})).status_code == 400
+    assert (await client.post("/api/workspaces/acme/notify", headers=POST, json={"notify": ["nope"]})).status_code == 400
+    assert (await client.post("/api/workspaces/acme/notify", headers=POST, json={"notify": "ops@acme.it"})).status_code == 400
     body = {"shell": {"font_size": 14}, "tunnel": {"idle_hours": 4, "bind": "127.0.0.1", "ports": "18000-18099"},
             "monitor": {"notify": ["ops@acme.it"]}}
     assert (await client.post("/api/options/save", headers=POST, json=body)).status_code == 200

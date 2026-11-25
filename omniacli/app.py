@@ -24,6 +24,7 @@ import logging
 import os
 import pwd
 import re
+import hmac
 import secrets
 import shutil
 import socket
@@ -377,6 +378,11 @@ _LINK_REQUEST_HEADERS = ("content-type", "accept", "accept-language")
 TUNNEL_HEADER = "X-OmniaCLI-Tunnel"
 # Log in as asked of a linked OmniaCLI: handled here when its link cannot open there
 _LINK_LOGIN_AS = re.compile(r"api/servers/([^/]+)/(production|test)/login-as")
+# the key of the marks a page gives the webhooks of the notices (webhook_ref), beside the users file; and how long
+# the mark of a notice's webhook is: https://hooks.slack.com/…#a1b2c3d4
+WEBHOOK_KEY_FILE = "webhook-ref.key"
+NOTICE_MARK = 8
+_NOTICE_SHOWN = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s]+/…#[0-9a-f]{%d}" % NOTICE_MARK)
 _LINK_RESPONSE_HEADERS = ("content-type", "content-disposition", "content-length",
                           "content-encoding", "location", "cache-control", clock.HEADER.lower())
 # the only routes a user of workspaces reaches (in_workspaces): its account,
@@ -4726,31 +4732,64 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                  **({"notify": notices_shown(ws.notify)} if ws.notify else {})}
                 for ws in sorted(settings.workspaces.values(), key=lambda w: w.name)]
 
+    # the key the marks of the webhooks are made with (webhook_ref): this machine's own, never in a page or a model
+    webhook_key_file = private_dir / WEBHOOK_KEY_FILE
+    webhook_key_found: list[bytes] = []
+
+    def webhook_key() -> bytes:
+        """The key of the webhooks' marks, made the first time (32 random bytes, readable by OmniaCLI only)."""
+        if webhook_key_found:
+            return webhook_key_found[0]
+        try:
+            fd = os.open(webhook_key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            key = webhook_key_file.read_bytes()
+        else:
+            key = secrets.token_bytes(32)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(key)
+        if len(key) < 32:
+            raise OSError(f"{webhook_key_file} is not a key")
+        webhook_key_found.append(key)
+        return key
+
+    def webhook_ref(url: str, size: int = 20) -> str:
+        """The mark a page gives a webhook: a keyed digest of its address (HMAC-SHA256 with this machine's key), which
+        tells nothing of it, not even to who knows the address of another machine's webhook."""
+        return hmac.new(webhook_key(), url.encode(), hashlib.sha256).hexdigest()[:size]
+
     def notices_shown(addresses: list[str]) -> list[str]:
-        """The addresses of notices as a page carries them: an email as it is, a webhook's site only (Slack and
-        Teams keep their secret in its path: https://hooks.slack.com/…); its page edits them elsewhere (a
-        workspace's page, Options), never sends these back."""
+        """The addresses of notices as a page carries them: an email as it is, a webhook as its site and its mark
+        (Slack and Teams keep their secret in its path: https://hooks.slack.com/…#a1b2c3d4), which notices_kept
+        reads back."""
         shown = []
         for address in addresses:
             parts = urlsplit(address)
-            shown.append(f"{parts.scheme}://{parts.netloc}/…" if parts.scheme and parts.netloc else address)
+            shown.append(f"{parts.scheme}://{parts.netloc}/…#{webhook_ref(address, NOTICE_MARK)}"
+                         if parts.scheme and parts.netloc else address)
         return shown
 
     def notices_kept(given, saved: list[str], where: str):
-        """The addresses of notices a page sends back (a workspace's notices, Options › Monitoring), with each
-        webhook it shows by its site only (notices_shown: https://hooks.slack.com/…) the saved one it stands for,
-        in their order; ConfigError when such a site stands for none. Anything else is as given."""
+        """The addresses of notices a page sends back (a workspace's notices, Options › Monitoring): a list, with
+        each webhook it shows by its site and its mark (notices_shown) the saved one of that mark; ConfigError for
+        a text instead of a list, a mark none saved has, a site without its mark. None: not sent (kept)."""
+        if given is None:
+            return None
         if not isinstance(given, list):
-            return given
-        left = list(zip(notices_shown(saved), saved))
+            raise ConfigError(f"{where}: a list of e-mail addresses and webhook URLs")
+        marks = dict(zip(notices_shown(saved), saved))
         out = []
         for address in given:
-            if isinstance(address, str) and address.endswith("/…"):
-                found = next((i for i, (shown, _saved) in enumerate(left) if shown == address.strip()), None)
-                if found is None:
-                    raise ConfigError(f"{where}: {address} is a webhook shown by its site only, and none saved goes "
-                                      "there: write its whole address")
-                address = left.pop(found)[1]
+            if isinstance(address, str) and "…" in address:
+                address = address.strip()
+                if _NOTICE_SHOWN.fullmatch(address):
+                    if address not in marks:
+                        raise ConfigError(f"{where}: {address} is a webhook shown by its site only, and none saved "
+                                          "has that mark: write its whole address")
+                    address = marks[address]
+                else:
+                    raise ConfigError(f"{where}: {address} is a webhook shown by its site and its mark: write its "
+                                      "whole address, or the line as the page showed it")
             out.append(address)
         return out
 
@@ -11453,7 +11492,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             elif page.name == "server":
                 context = centralpages.server_view(context, prefix)
             elif page in centralpages.BY_MODEL:
-                context = centralpages.page_view(page.name, context, prefix, request_language(request))
+                # the plugins its contract says (a server's form offers those only)
+                theirs = (agents.get(link.name) or {}).get("plugins")
+                context = centralpages.page_view(page.name, context, prefix, request_language(request),
+                                                 theirs if isinstance(theirs, dict) else {})
             if page.name == "server" and (context.get("server") or {}).get("name") != params.get("server"):
                 raise ValueError(f"its page is of {str((context.get('server') or {}).get('name'))[:60]!r}, "
                                  f"not of {params.get('server')}")
@@ -11514,9 +11556,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if here and path.startswith("static/") and path[len("static/"):] in _STATIC_FILES:
             # the files of this panel's pages: its own, never the machine's script
             return await static_file(path[len("static/"):])
-        # the machine's own HTML passes: on a link with pages: machine, for a page this panel does not draw (an
-        # invitation, a plugin's page), and as the way back of §17.2 for a machine that never said agent_api 1 or more
-        machine_html = not here or (not api and drawn is None)
+        # the machine's own HTML passes: on a link with pages: machine; for the few pages this panel does not draw
+        # (centralpages.MACHINE_OWN: an invitation, a plugin's own pages), with the line that says whose page it
+        # is; and as the way back of §17.2 for a machine that never said agent_api 1 or more. Any other path of a
+        # here link is data (an action's answer, a file) or this panel's own «not found»
+        own = here and not api and drawn is None and centralpages.machine_own(path)
+        unmatched = here and not api and drawn is None and not own
+        machine_html = not here or own
+        if own and request.method == "GET":
+            line = machine_page_line(request, link, await agent_seen(link, me) or {}, centralpages.OWN)
         if drawn is not None:
             page, params = drawn
             agent = await agent_seen(link, me)
@@ -11558,8 +11606,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         headers["accept-language"] = request_language(request)
         headers.update(link_headers(link, me.name, me.role))
         headers[_MENU_HEADER] = ",".join(menu_places(me))
-        if here and api and "text/html" in headers.get("accept", ""):
-            # an answer of its API, never its error page: the person reads the machine's reason (its JSON)
+        # a browser that opens a path not drawn here (a page it asks, not a script's request): its refusal is this
+        # panel's error page
+        browsing = unmatched and request.method == "GET" and "text/html" in headers.get("accept", "")
+        if here and (api or unmatched) and "text/html" in headers.get("accept", ""):
+            # an answer of its API or of an action, a file, never its error page: the person reads the machine's reason
+            # (its JSON)
             headers["accept"] = "application/json"
         if tunnel_reaches_browser(request):
             headers[TUNNEL_HEADER] = "1"
@@ -11598,8 +11650,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 has_body = bool(read)
             else:
                 has_body = True
-        if not machine_html and not centralpages.is_data(resp.headers.get("content-type", ""),
-                                                         resp.headers.get("content-disposition", ""), has_body):
+        logo = (path == brand.LOGO_ROUTE.lstrip("/") and request.method == "GET"
+                and resp.headers.get("content-type", "").split(";", 1)[0].strip().lower() == "image/svg+xml")
+        if logo:
+            # the machine's logo (Options › Whitelabel) may be an SVG, which brand.py takes without scripts: an
+            # image, never a document of this origin
+            kept["content-security-policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+        if not machine_html and not logo and not centralpages.is_data(resp.headers.get("content-type", ""),
+                                                                      resp.headers.get("content-disposition", ""),
+                                                                      has_body):
             # a page this panel draws, or an answer that is not data: never the machine's document or script
             # under this panel's origin (AD-017 §17.5 decision 1)
             if read is None:
@@ -11607,11 +11666,33 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             access_log.record("failed", "link", link.name, request.client.host if request.client else "",
                               f"{resp.headers.get('content-type', '')[:60]} of {request.method} /{path[:120]} refused: "
                               "its pages are drawn here")
+            if unmatched and request.method == "GET":
+                # a page of the machine this panel does not draw: this panel's own «not found», under the link
+                as_drawn_here(request, link, me, "user", False)
+                raise HTTPException(status.HTTP_404_NOT_FOUND,
+                                    f"{link.name} has no page /{path[:120]} that this panel draws or lets through")
             return link_failure(request, link, f"{link.name} answered {resp.headers.get('content-type') or 'no type'} "
                                                "where this panel takes data only: refused")
+        if browsing and resp.status_code >= 400 and not resp.headers.get("content-disposition"):
+            # the machine's refusal (its JSON) said on this panel's error page, under the link
+            if read is None:
+                try:
+                    read = await resp.aread()
+                finally:
+                    await resp.aclose()
+            try:
+                said = json.loads(read)
+            except ValueError:
+                said = None
+            reason = str((said.get("detail") or said.get("error")) if isinstance(said, dict) else "") or ""
+            as_drawn_here(request, link, me, "user", False)
+            if resp.status_code == status.HTTP_404_NOT_FOUND:
+                reason = f"{link.name} has no page /{path[:120]} that this panel draws or lets through"
+            raise HTTPException(resp.status_code if resp.status_code in (401, 403, 404, 410) else status.HTTP_502_BAD_GATEWAY,
+                                reason[:300] or f"{link.name}: {resp.status_code}")
         if read is not None:
             return Response(read, status_code=resp.status_code, headers=kept)
-        if (line and resp.status_code == 200 and "text/html" in resp.headers.get("content-type", "")
+        if (line and (resp.status_code == 200 or own) and "text/html" in resp.headers.get("content-type", "")
                 and resp.headers.get("content-encoding", "identity").lower() in ("", "identity")):
             # (a body the machine encoded all the same is passed as it is, without the line)
             try:
@@ -12557,6 +12638,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 told = notices_kept(payload["monitor"].get("notify"), settings.options.monitor_notify, "monitor.notify")
             except ConfigError as exc:
                 return refuse(str(exc))
+            except OSError as exc:
+                return refuse(f"Cannot read {webhook_key_file}: {exc}", 500)
             payload = {**payload, "monitor": {**payload["monitor"], **({"notify": told} if told is not None else {}),
                                               "webhooks": monitor_to_dict(settings.options).get("webhooks", {})}}
         if "audit" not in payload:
@@ -12649,10 +12732,6 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                              "shown": f"https://{parts.hostname}" + ("/…" if parts.path not in ("", "/") or parts.query else ""),
                              "signed": bool((keys.get(url) or {}).get("secret")), "jobs": bool((keys.get(url) or {}).get("jobs"))})
         return rows
-
-    def webhook_ref(url: str) -> str:
-        """The name a page gives a webhook: a digest of its address, which it does not tell."""
-        return hashlib.sha256(f"omniacli-webhook:{url}".encode()).hexdigest()[:20]
 
     def webhook_urls() -> list[str]:
         """The webhooks of webhook_rows, by their addresses."""

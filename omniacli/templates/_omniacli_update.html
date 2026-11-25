@@ -162,7 +162,7 @@
     show("follow");
     $("ou-title").textContent = $("ou-title").textContent || {{ _("Update OmniaCLI") | tojson }};
     $("ou-state").textContent = T.running;
-    const job = $("ou-job"); job.href = `${PREFIX}/jobs/${id}`; job.hidden = false;
+    const job = $("ou-job"); job.href = omniaJobPage(id, PREFIX) || "#"; job.hidden = !omniaJobPage(id, PREFIX);
     if (!dialog.open) dialog.showModal();
     // while OmniaCLI restarts its pages do not answer (through a link: the link's proxy says so); once back, the
     // job runs again until the unit's outcome is read. One interrupted for a minute after the return is ended.

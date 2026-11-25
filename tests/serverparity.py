@@ -18,8 +18,11 @@ SECRETS = ("admin_passwd", "db_password", "token", "secret", "password")
 # whether a copy resets the passwords of its database (an option of a schedule)
 # (slice 5: the tokens of a workspace and of the machine by their names, whether an SSO provider's secret and the SMTP
 # password are set, the shortest password a page accepts)
-NOT_SECRETS = frozenset({"token_set", "token_people", "reset_passwords", "tokens", "secret_set", "smtp_password_set",
+NOT_SECRETS = frozenset({"token_set", "token_people", "reset_passwords", "secret_set", "smtp_password_set",
                          "min_password"})
+# a name of a secret that is no secret at one place of one page's model only: the list of the tokens of a workspace's
+# page and of Users (their names, roles and people)
+NOT_SECRETS_AT = {"workspace": frozenset({"tokens"}), "users": frozenset({"tokens"})}
 # the pages of classes B and C drawn again from page_view, by their template (a person's own pages have no model for
 # a link)
 CLASS_B = {p.template: p for p in centralpages.BY_MODEL if p.name not in centralpages.PERSON_PAGES}
@@ -34,9 +37,15 @@ def keys(value) -> list[str]:
     return []
 
 
-def secret_keys(value) -> list[str]:
-    """The keys of a JSON value named as a secret."""
-    return [k for k in keys(value) if k not in NOT_SECRETS and any(s in k.lower() for s in SECRETS)]
+def secret_keys(value, page: str = "") -> list[str]:
+    """The keys of a JSON value (a page's model) named as a secret; at its top only, those NOT_SECRETS_AT allows the
+    page."""
+    top = NOT_SECRETS_AT.get(page, frozenset()) if isinstance(value, dict) else frozenset()
+    found = [k for k in keys(value) if k not in NOT_SECRETS and any(s in k.lower() for s in SECRETS)]
+    for k in top & set(value):
+        # one of the top's, at the top: not counted; anywhere deeper it still is
+        found.remove(k)
+    return found
 
 
 def main_of(html: str) -> str:
@@ -86,7 +95,7 @@ class Twice:
         prefix's addresses checked, and through a link its globals (what the role there allows, the person, the
         machine's clock: centralpages.drawn_for), as draw_linked_page sets them."""
         resp = self.real(request, name, context, **kw)
-        found = secret_keys(json.loads(text))
+        found = secret_keys(json.loads(text), page)
         assert not found, (page, found)
         prefix = getattr(request.state, "prefix", "") or ""
         user = getattr(request.state, "user", None)

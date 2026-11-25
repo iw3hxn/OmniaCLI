@@ -380,7 +380,7 @@ document.getElementById("form").addEventListener("submit", async (ev) => {
   async function publish(host) {
     said("");
     const {ok, data, reached} = await send("{{ prefix }}/api/portal/publish", {host});
-    if (ok && data.job) { location.href = `{{ prefix }}/jobs/${data.job}?back=${encodeURIComponent(location.pathname)}`; return; }
+    if (ok && data.job && omniaJobPage(data.job)) { location.href = `${omniaJobPage(data.job)}?back=${encodeURIComponent(location.pathname)}`; return; }
     said(data.error || (reached ? "" : T.unreachable));
   }
   document.getElementById("portal-check").addEventListener("click", check);

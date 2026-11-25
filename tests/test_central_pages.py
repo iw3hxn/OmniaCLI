@@ -227,14 +227,15 @@ async def test_a_machine_at_zero_writes_its_pages_with_the_line(central):
     """A machine of before (no agent_api): every page is its own, as before; the line that says why only on the
     pages this panel would draw, the others exactly as with pages: machine."""
     central.machine.info = {"version": "2026.1.5513"}
-    # (since slice 5 every page of the machine is drawn here, but those of who logs in there: an invitation's)
+    # (since slice 5 every page of the machine is drawn here, but those of who logs in there: an invitation's, its own
+    # with the line that says it is the machine's; with pages: machine, without)
     for path in ("invite/nothing",):
         here = await central.get(f"/links/cliente/{path}", headers=PAGE)
         link_pages(central, "machine")
         theirs = await central.get(f"/links/cliente/{path}", headers=PAGE)
         link_pages(central, "here")
-        assert here.status_code == theirs.status_code and here.text == theirs.text, path
-        assert "data-machine-page-line" not in here.text
+        assert here.status_code == theirs.status_code and "data-machine-page-line" not in theirs.text, path
+        assert "a page of the machine that this panel does not draw" in here.text, path
     for path in ("disks", "help"):
         central.machine.asked.clear()
         resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
@@ -950,9 +951,9 @@ async def test_the_class_b_models_carry_no_secret_value(central, monkeypatch):
         assert model["kinds"]["s3"]["label"] == "S3 and compatible"
         # the notices of a schedule and of a workspace: their sites only (a webhook keeps its secret in its path)
         model = (await machine.get("/api/pages/schedules", headers=LINK)).json()["context"]
-        assert model["schedules"][0]["data"]["notify"] == ["https://hooks.example.com/…"]
+        assert re.fullmatch(r"https://hooks.example.com/…#[0-9a-f]{8}", model["schedules"][0]["data"]["notify"][0])
         model = (await machine.get("/api/pages/workspaces", headers=LINK)).json()["context"]
-        assert model["workspaces"][0]["notify"] == ["https://hooks.example.com/…"]
+        assert re.fullmatch(r"https://hooks.example.com/…#[0-9a-f]{8}", model["workspaces"][0]["notify"][0])
 
 
 async def test_the_class_b_pages_have_the_controls_of_the_machines(central, monkeypatch):

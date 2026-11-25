@@ -128,7 +128,7 @@
     b.disabled = true;
     const got = await post(`${base}/cancel`);
     if (got.error) { b.disabled = false; say(got.error); return; }
-    location.href = `${PREFIX}/jobs/${got.job}`;
+    omniaOpen(omniaJobPage(got.job, PREFIX));
   });
   document.getElementById("handover-delete")?.addEventListener("click", async (event) => {
     const b = event.currentTarget;
@@ -136,7 +136,7 @@
     b.disabled = true;
     const got = await post(`${base}/delete`);
     if (got.error) { b.disabled = false; say(got.error); return; }
-    location.href = `${PREFIX}/jobs/${got.job}`;
+    omniaOpen(omniaJobPage(got.job, PREFIX));
   });
   document.getElementById("handover-relight")?.addEventListener("click", async (event) => {
     const b = event.currentTarget;
@@ -147,7 +147,7 @@
       body: JSON.stringify({confirm: WS})}).catch(() => null);
     const got = resp ? await resp.json().catch(() => ({})) : {};
     if (!resp || !resp.ok) { b.disabled = false; say(got.error || got.detail || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${got.job}`;
+    omniaOpen(omniaJobPage(got.job, PREFIX));
   });
   document.getElementById("handover-redo")?.addEventListener("click", async (event) => {
     const b = event.currentTarget;
@@ -178,7 +178,7 @@
     b.disabled = true;
     const got = await post(`${reception}/retry`);
     if (got.error) { b.disabled = false; say(got.error); return; }
-    location.href = `${PREFIX}/jobs/${got.job}`;
+    omniaOpen(omniaJobPage(got.job, PREFIX));
   });
   document.getElementById("reception-switch")?.addEventListener("click", async (event) => {
     const b = event.currentTarget, d = b.dataset;
@@ -191,7 +191,7 @@
       body: JSON.stringify({confirm: d.workspace})}).catch(() => null);
     const got = resp ? await resp.json().catch(() => ({})) : {};
     if (!resp || !resp.ok) { b.disabled = false; say(got.error || got.detail || T.refused); return; }
-    location.href = `${PREFIX}/jobs/${got.job}`;
+    omniaOpen(omniaJobPage(got.job, PREFIX));
   });
   document.getElementById("reception-cancel")?.addEventListener("click", async (event) => {
     const b = event.currentTarget;
@@ -199,7 +199,7 @@
     b.disabled = true;
     const got = await post(`${reception}/cancel`);
     if (got.error) { b.disabled = false; say(got.error); return; }
-    location.href = `${PREFIX}/jobs/${got.job}`;
+    omniaOpen(omniaJobPage(got.job, PREFIX));
   });
 })();
 </script>

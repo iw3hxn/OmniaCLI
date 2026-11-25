@@ -7,12 +7,20 @@ secrets these pages are about (by value), their names and addresses stay on the 
 the path, and the page drawn here equals the machine's own for every role."""
 import base64
 import dataclasses
+import hashlib
+import hmac
+import json
 import re
+import shutil
+import subprocess
+from pathlib import Path
 
 import httpx
+import pytest
 
+from omniacli import app as app_module
 from omniacli import centralpages
-from omniacli.config import parse_connection, parse_publication, parse_puller
+from omniacli.config import ConfigError, parse_connection, parse_notify, parse_publication, parse_puller
 
 from .conftest import LINK_TOKEN, USER_HASH
 from .serverparity import Twice, main_of, secret_keys
@@ -129,17 +137,18 @@ async def test_the_models_of_slice_5_carry_no_secret_value(central, monkeypatch)
             assert data["agent_api"] == 4 and set(data["context"]) <= set(centralpages.BY_NAME[name].fields), path
             for secret in found:
                 assert secret not in resp.text, (path, secret)
-            assert not secret_keys(data["context"]), (path, secret_keys(data["context"]))
+            assert not secret_keys(data["context"], name), (path, secret_keys(data["context"], name))
         # what they say of them: set or not, a webhook by its site and its ref
         model = (await machine.get("/api/pages/options", headers=LINK)).json()["context"]
         assert model["options"]["smtp_password_set"] is True and "smtp_password" not in model["options"]
-        assert model["options"]["monitor_notify"] == ["ops@example.com", "https://hooks.example.com/…"]
+        assert model["options"]["monitor_notify"][0] == "ops@example.com" and re.fullmatch(
+            r"https://hooks.example.com/…#[0-9a-f]{8}", model["options"]["monitor_notify"][1])
         assert [{k: h[k] for k in ("shown", "signed", "jobs")} for h in model["webhooks"]] == [
             {"shown": "https://hooks.example.com/…", "signed": True, "jobs": True},
             {"shown": "https://hooks.example.com/…", "signed": False, "jobs": False}]
         model = (await machine.get("/api/pages/workspace", params={"workspace": "acme"}, headers=LINK)).json()["context"]
         assert model["sso"]["secret_set"] is True and "client_secret" not in model["sso"]
-        assert model["ws"]["notify"] == ["https://hooks.example.com/…"]
+        assert re.fullmatch(r"https://hooks.example.com/…#[0-9a-f]{8}", model["ws"]["notify"][0])
         assert [t["name"] for t in model["tokens"]] == ["ci-acme"]
         model = (await machine.get("/api/pages/pullers", headers=LINK)).json()["context"]
         assert model["publications"][0]["has_key"] is True and "key" not in model["publications"][0]
@@ -262,39 +271,77 @@ async def test_a_servers_form_offers_this_panels_plugins(central, monkeypatch):
 
 
 async def test_the_notices_shown_by_their_site_are_kept(central, monkeypatch):
-    """A workspace's notices and Options › Monitoring show a webhook by its site only (its secret is in its path), and
-    send that back at saving: the saved webhook it stands for is kept, in its place; a site that stands for none is
-    refused; a webhook of Options is named by its ref."""
+    """A workspace's notices and Options › Monitoring show a webhook by its site and its mark (its secret is in its
+    path; the mark is an HMAC of its address with a key of the machine), and send that back at saving: the saved
+    webhook of that mark is kept, in its place, even two on the same site; a mark none saved has, a site without its
+    mark, a text instead of a list are refused; a webhook of Options is named by its keyed ref."""
     await class_c(central, monkeypatch)
-    settings = central.machine.asgi.app.state.settings
+    machine_app = central.machine.asgi.app
+    settings = machine_app.state.settings
+    a, b = "https://hooks.example.com/services/T0/B0/Hook914", "https://hooks.example.com/services/T0/B9/Other914"
+    settings.workspaces = {"acme": dataclasses.replace(settings.workspaces["acme"], notify=[a, b])}
     headers = {**LINK, "Origin": "http://customer.test"}
     async with httpx.AsyncClient(transport=central.machine.asgi, base_url="http://customer.test") as machine:
         page = (await machine.get("/workspaces/acme", headers={**headers, "Accept": "text/html"})).text
-        assert "Hook914" not in page and "https://hooks.example.com/…" in page
+        assert "Hook914" not in page and "Other914" not in page
+        shown = re.search(r'<textarea id="notify-list"[^>]*>([^<]*)</textarea>', page).group(1).split("\n")
+        assert len(shown) == 2 and shown[0] != shown[1]
+        assert all(re.fullmatch(r"https://hooks\.example\.com/…#[0-9a-f]{8}", s) for s in shown)
+        # the first taken away, the second kept (the review's case: it kept the first and dropped the second)
         resp = await machine.post("/api/workspaces/acme/notify", headers=headers, json={
-            "notify": ["mario@example.com", "https://hooks.example.com/…"]})
+            "notify": ["mario@example.com", shown[1]]})
         assert resp.status_code == 200, resp.text
-        assert settings.workspaces["acme"].notify == ["mario@example.com",
-                                                      "https://hooks.example.com/services/T0/B0/Hook914"]
-        resp = await machine.post("/api/workspaces/acme/notify", headers=headers, json={
-            "notify": ["https://other.example.com/…"]})
-        assert resp.status_code == 400 and "write its whole address" in resp.text
-        # Options › Monitoring: the same, and a webhook named by its ref
+        assert settings.workspaces["acme"].notify == ["mario@example.com", b]
+        for given, said in ((["https://hooks.example.com/…#00000000"], "none saved has that mark"),
+                            (["https://hooks.example.com/…"], "write its whole address, or the line as the page"),
+                            ("mario@example.com, " + shown[1], "a list of e-mail addresses")):
+            resp = await machine.post("/api/workspaces/acme/notify", headers=headers, json={"notify": given})
+            assert resp.status_code == 400 and said in resp.text, (given, resp.text)
+        assert settings.workspaces["acme"].notify == ["mario@example.com", b]
+        # in Italian
+        resp = await machine.post("/api/workspaces/acme/notify", headers={**headers, "Accept-Language": "it"},
+                                  json={"notify": ["https://hooks.example.com/…#00000000"]})
+        assert resp.status_code == 400
+        # Options › Monitoring: the same
         page = (await machine.get("/options", headers={**headers, "Accept": "text/html"})).text
-        assert "MonHook915" not in page and 'value="ops@example.com, https://hooks.example.com/…"' in page
+        found = re.search(r'id="monitor-notify" class="mono" value="([^"]*)"', page).group(1)
+        assert "MonHook915" not in page and re.fullmatch(r"ops@example\.com, https://hooks\.example\.com/…#[0-9a-f]{8}",
+                                                         found)
         resp = await machine.post("/api/options/save", headers=headers, json={
-            "monitor": {"notify": ["https://hooks.example.com/…", "ops@example.com"]}})
+            "monitor": {"notify": [found.split(", ")[1], "ops@example.com"]}})
         assert resp.status_code == 200, resp.text
         assert settings.options.monitor_notify == ["https://hooks.example.com/services/T1/B1/MonHook915",
                                                    "ops@example.com"]
         assert settings.options.webhook_keys["https://hooks.example.com/services/T1/B1/MonHook915"]["secret"] == \
             "WhSecret-915-abcdefghijklm"
+        for given in ("ops@example.com", ["https://hooks.example.com/…"]):
+            resp = await machine.post("/api/options/save", headers=headers, json={"monitor": {"notify": given}})
+            assert resp.status_code == 400, given
+        # the refs of the webhooks: keyed by the machine's key (no digest anyone could make of a known address)
         ref = re.findall(r'data-ref="([0-9a-f]{20})"', page)[0]
+        key = (settings.users_file.parent / app_module.WEBHOOK_KEY_FILE)
+        assert oct(key.stat().st_mode)[-3:] == "600" and len(key.read_bytes()) == 32
+        url = "https://hooks.example.com/services/T1/B1/MonHook915"
+        assert ref == hmac.new(key.read_bytes(), url.encode(), hashlib.sha256).hexdigest()[:20]
+        assert ref != hashlib.sha256(f"omniacli-webhook:{url}".encode()).hexdigest()[:20]
         resp = await machine.post("/api/options/webhooks/save", headers=headers, json={"ref": ref, "jobs": False})
         assert resp.status_code == 200 and "MonHook915" not in resp.text
-        assert not settings.options.webhook_keys["https://hooks.example.com/services/T1/B1/MonHook915"]["jobs"]
+        assert not settings.options.webhook_keys[url]["jobs"]
         resp = await machine.post("/api/options/webhooks/save", headers=headers, json={"ref": "0" * 20, "jobs": True})
         assert resp.status_code == 404
+
+
+def test_an_address_shown_by_its_site_is_no_address():
+    """Review finding 5: «https://hooks.slack.com/…» (what a page shows) is never saved as a webhook."""
+    for given in ("https://hooks.slack.com/…", "https://hooks.slack.com/…#a1b2c3d4", ["https://x.example.com/a…"]):
+        with pytest.raises(ConfigError):
+            parse_notify(given, "notify")
+    assert parse_notify(["https://hooks.slack.com/services/T/B/x"], "notify") == ["https://hooks.slack.com/services/T/B/x"]
+
+
+def test_the_webhook_key_is_purged():
+    purge = (Path(app_module.__file__).parent.parent / "packaging" / "debian" / "files" / "postrm").read_text()
+    assert f"/var/lib/omniacli/{app_module.WEBHOOK_KEY_FILE}" in purge.split("    purge)", 1)[1]
 
 
 async def test_the_machines_version_on_its_section(central, monkeypatch):
@@ -329,3 +376,111 @@ async def test_a_machine_of_slice_4_has_its_section_with_the_line_and_its_table_
     assert page.status_code == part.status_code == 200
     assert "data-machine-page-line" in page.text and "/" in central.machine.asked
     assert "data-machine-page-line" not in part.text and "data-server=" in part.text
+
+
+# --- the review of a460665 -----------------------------------------------------------------------------------
+
+async def test_a_handovers_banner_stays_on_the_machine(central, monkeypatch):
+    """Review finding 1: the id of a reception its banner's script POSTs to (${PREFIX}/api/handover/<id>/…) and the
+    jobs its buttons open are names: one that would leave the machine refuses the model."""
+    await class_c(central, monkeypatch)
+    away = "../../../links/other/api/servers/prod/move"
+    for change in (lambda c: c.update(handover_in={"id": away, "phase": "ready", "workspace": "acme"}),
+                   lambda c: c.update(handover_in={"id": "h1", "job": away, "phase": "receiving"}),
+                   lambda c: c.update(handover_out={"id": "h1", "phase": "relit", "relight": {"job": away}}),
+                   lambda c: c.update(handover_out={"id": "h1", "phase": "committed", "deletion": {"job": away}}),
+                   lambda c: c.update(handover_out={"id": away, "phase": "prepared"})):
+        data = await own_c(central, "workspace", {"workspace": "acme"})
+        change(data["context"])
+        answer_b(central, "workspace", data)
+        resp = await central.get("/links/cliente/workspaces/acme", headers=PAGE)
+        assert resp.status_code == 502 and "is not the one this panel reads" in resp.text, resp.text[:200]
+        assert away not in resp.text
+    del central.machine.answer["/api/pages/workspace"]
+
+
+async def test_only_the_machines_own_pages_pass_as_its_html(central, monkeypatch):
+    """Review finding 3: through a link whose pages are drawn here, the machine's HTML passes only for an invitation
+    and a plugin's own page, with the line that says whose page it is; any other path not drawn here is data (an
+    action's answer, a file) or this panel's own «not found», never the machine's document on this panel's origin."""
+    await class_c(central, monkeypatch)
+    central.machine.html_at = "/evil"
+    resp = await central.get("/links/cliente/evil", headers=PAGE)
+    assert resp.status_code == 404 and "<script>alert(1)</script>" not in resp.text
+    assert "has no page /evil that this panel draws or lets through" in resp.text
+    assert 'href="/links/cliente/instances"' in resp.text
+    # in Italian
+    resp = await central.get("/links/cliente/evil", headers={**PAGE, "Cookie": "omniacli_lang=it"})
+    assert "che questo pannello scrive o lascia passare" in resp.text
+    # the machine's own «not found» (its JSON, asked so) is this panel's page too, and so is a refusal
+    central.machine.html_at = ""
+    resp = await central.get("/links/cliente/nothing/here", headers=PAGE)
+    assert resp.status_code == 404 and "text/html" in resp.headers["content-type"]
+    assert "has no page /nothing/here that this panel draws or lets through" in resp.text
+    central.machine.answer["/invite/old"] = (410, {"content-type": "text/html"}, b"<html><body>gone</body></html>")
+    resp = await central.get("/links/cliente/invite/old", headers=PAGE)
+    assert resp.status_code == 410 and "a page of the machine that this panel does not draw" in resp.text
+    # its own pages: an invitation, a plugin's page, with the line
+    central.machine.html_at = ""
+    for path in ("invite/abc", "x/odoo/servers/srv/production/addons"):
+        central.machine.answer[f"/{path}"] = (200, {"content-type": "text/html"},
+                                              b"<html><body><p>the machine's own</p></body></html>")
+        resp = await central.get(f"/links/cliente/{path}", headers=PAGE)
+        assert resp.status_code == 200 and "the machine's own" in resp.text, path
+        assert "a page of the machine that this panel does not draw" in resp.text, path
+    for path in ("invite/../../evil", "x/odoo/../../evil", "invite/a/b", "evil", "invite"):
+        assert not centralpages.machine_own(path), path
+    # data at a path not drawn here passes (an action's answer), its refusal as the machine's JSON
+    central.machine.html_at = ""
+    resp = await central.post("/links/cliente/servers/srv/test/pull",
+                              headers={**as_("viewer"), "Origin": "http://central.test"})
+    assert resp.status_code == 403 and "application/json" in resp.headers["content-type"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_scripts_open_only_names_and_paths_of_the_machine():
+    """Review finding 3: what an answer of the machine names for the page to open (a job, a page) goes through
+    omniaJobPage and omniaPath (base.html): a job's id is a name, a page a path under the prefix."""
+    source = app_module._TEMPLATES.env.loader.get_source(app_module._TEMPLATES.env, "base.html")[0]
+    start = source.index("window.omniaPrefix")
+    helpers = source[start:source.index("window.omniaOpen", start)].replace('{{ (prefix or "") | tojson }}',
+                                                                             '"/links/m"')
+    jobs = {"20261124-101500-abc123": "/links/m/jobs/20261124-101500-abc123", "../../api/links/delete": None,
+            "a/b": None, ".": None, "..": None, "": None, "javascript:alert(1)": None, "%2e%2e": None}
+    paths = {"/links/m/workspaces/acme#users": True, "/links/m": True, "/links/other/x": False, "//evil.test/x": False,
+             "https://evil.test/": False, "/links/m/../../options": False, "/links/m/%2e%2e/x": False,
+             "/links/m/a%2Fb": False, "/links/m/a b": False, "/links/m\\x": False, "/options": False}
+    script = ("const window = {};\n" + helpers
+              + f"\nconsole.log(JSON.stringify({json.dumps(list(jobs))}.map((id) => window.omniaJobPage(id))));"
+              + f"\nconsole.log(JSON.stringify({json.dumps(list(paths))}.map((p) => window.omniaPath(p) !== null)));"
+              + "\nconsole.log(JSON.stringify([window.omniaJobPage(5), window.omniaPath(undefined),"
+              + " window.omniaJobPage('x', '/links/o')]));")
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout.splitlines()
+    assert dict(zip(jobs, json.loads(out[0]))) == jobs
+    assert dict(zip(paths, json.loads(out[1]))) == paths
+    assert json.loads(out[2]) == [None, None, "/links/o/jobs/x"]
+    # the templates of the pages drawn here open jobs and pages through them only
+    for name in ("_handover_band.html", "_machine_database.html", "_new_instance_dialog.html", "_omniacli_update.html",
+                 "index.html", "options.html", "workspace.html", "users.html", "server_form.html"):
+        text = app_module._TEMPLATES.env.loader.get_source(app_module._TEMPLATES.env, name)[0]
+        assert not re.search(r'(?<!/api)/jobs/\$\{|/jobs/" \+|location\.href = ROOT \+'
+                             r'|(?<!omniaPath\()"\{\{ prefix \}\}" \+ data\.page', text), name
+
+
+async def test_a_servers_form_offers_only_the_machines_plugins(central, monkeypatch):
+    """Review finding 6: of this panel's plugins, the form offers those the machine has (its contract's plugins)."""
+    await class_c(central, monkeypatch)
+    central.machine.info = {"agent_api": centralpages.AGENT_API, "plugins": {"odoo": centralpages.BUILT_IN},
+                            "version": "2026.1.5520"}
+    resp = await central.get("/links/cliente/config/srv/edit", headers=PAGE)
+    assert resp.status_code == 200, resp.text[:300]
+    model = json.loads(re.search(r"const MODEL = (\{.*?\});\n", resp.text).group(1))
+    assert set(model["types"]) == {"odoo"} and len(centralpages.plugin_types()) > 1
+
+
+def test_tokens_is_no_secret_at_the_top_of_a_workspace_or_users_only():
+    """Review finding 7: the key «tokens» is allowed at the top of the workspace's and Users' models, nowhere else."""
+    assert secret_keys({"tokens": [{"name": "ci"}]}, "workspace") == []
+    assert secret_keys({"tokens": [{"name": "ci"}]}, "users") == []
+    assert secret_keys({"tokens": [{"name": "ci"}]}, "options") == ["tokens"]
+    assert secret_keys({"ws": {"tokens": ["x"]}}, "workspace") == ["tokens"]

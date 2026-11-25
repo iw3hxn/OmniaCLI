@@ -278,7 +278,7 @@
     const data = resp ? await resp.json().catch(() => ({})) : {};
     create.textContent = T.create; ready();
     if (!resp || !resp.ok || !data.job) { error.textContent = data.error || data.detail || T.refused; return; }
-    location.href = `${base}/jobs/${data.job}`;
+    omniaOpen(omniaJobPage(data.job, base));
   });
 })();
 </script>

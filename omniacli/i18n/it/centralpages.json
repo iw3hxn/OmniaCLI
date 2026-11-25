@@ -5,6 +5,7 @@
  "Open the links": "Apri i collegamenti",
  "Opens the list of the links of this panel, where each one is changed": "Apre l'elenco dei collegamenti di questo pannello, dove ognuno si modifica",
  "Page of {machine} not shown": "Pagina di {machine} non mostrata",
+ "Page written by {machine} ({version}): a page of the machine that this panel does not draw": "Pagina scritta da {machine} ({version}): una pagina della macchina che questo pannello non scrive",
  "Page written by {machine} ({version}): its plugins are not those of the panel ({plugins})": "Pagina scritta da {machine} ({version}): i suoi plugin non sono quelli del pannello ({plugins})",
  "Page written by {machine} ({version}): the panel is older than the machine": "Pagina scritta da {machine} ({version}): il pannello è più vecchio della macchina",
  "Page written by {machine} ({version}): update it to see the new one": "Pagina scritta da {machine} ({version}): aggiornala per vedere quella nuova",

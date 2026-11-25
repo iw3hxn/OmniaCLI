@@ -53,6 +53,7 @@ PAGES_WAYS = (PAGES_HERE, PAGES_MACHINE)
 BEHIND = "behind"  # the machine is older than the page asks
 AHEAD = "ahead"  # the panel is older than the machine
 PLUGINS = "plugins"  # a plugin of the machine this panel has not, or at another version
+OWN = "own"  # a page of the machine this panel does not draw (MACHINE_OWN)
 
 # how often a link's agent_api is read again, kept in memory (seconds); after an update made from the panel,
 # for a while, much sooner: the machine restarts with its new version
@@ -196,6 +197,18 @@ BY_MODEL = CLASS_B + CLASS_C
 # refuses their model as it refuses their page (404, 403); drawn here as this panel's error page, never with a
 # context (the person's own are this panel's /account and /tunnels; AD-018 brings the customers' account here)
 PERSON_PAGES = frozenset({"account", "tunnels"})
+
+
+# the only pages of a linked machine whose HTML passes through a link whose pages are drawn here (AD-017 slice 5),
+# with the line that says so: an invitation (of who logs in there, class D) and a plugin's own pages (under /x/, of
+# a plugin's code); anything else not drawn here is data, or this panel's «not found»
+MACHINE_OWN = (re.compile(r"invite/[A-Za-z0-9_-]+"), re.compile(r"x/[a-z0-9_-]+/[A-Za-z0-9._~/-]+"))
+
+
+def machine_own(path: str) -> bool:
+    """Whether path (under /links/<name>/) is a page of MACHINE_OWN: no . or .. segment either."""
+    return (not any(s in (".", "..") for s in path.split("/"))
+            and any(p.fullmatch(path) for p in MACHINE_OWN))
 
 
 def match(path: str) -> tuple[Page, dict[str, str]] | None:
@@ -661,7 +674,10 @@ _NAMES_AT = {
     "index": ("rows[].name", "rows[].parent", "jobs[].id", "load_workspaces[][]"),
     "dashboard_servers": ("rows[].name", "rows[].parent"),
     "workspace": ("ws.name", "members[].name", "servers[]", "instances[]", "relay_links[]", "links[]", "db_links[]",
-                  "tokens[].name", "grants[].id", "sites[].instance"),
+                  "tokens[].name", "grants[].id", "sites[].instance",
+                  # the banners of a handover: the id its script POSTs to, the jobs it opens
+                  "handover_in.id", "handover_in.job", "handover_out.id", "handover_out.relight.job",
+                  "handover_out.deletion.job"),
     "users": ("users[].name", "users[].workspaces[]", "links[].name", "tokens[].name", "tokens[].workspace",
               "grants[].id", "link_names[]"),
     "pullers": ("pullers[].puller", "connections[].name", "publications[].instance", "instances[]", "links[]",
@@ -738,14 +754,15 @@ def instance_rows(context: dict, prefix: str) -> None:
             row["base"], row["link"] = prefix, ""
 
 
-def server_form_view(context: dict) -> None:
+def server_form_view(context: dict, theirs: dict | None = None) -> None:
     """A server's form drawn here: what it offers of the plugins (their fields, the buttons of a field and the
     routes they ask) is this panel's own, as its contract wants them the same as the machine's (never a route of the
-    machine's word, which the form's script would fetch and open)."""
+    machine's word, which the form's script would fetch and open); of them, only those the machine has (theirs: the
+    plugins its contract says; None, a machine's own page: all)."""
     model = context.get("model")
     if not isinstance(model, dict):
         raise ValueError("its page of a server's form has no model")
-    model["types"] = fields_of(plugin_types())
+    model["types"] = fields_of({n: t for n, t in plugin_types().items() if theirs is None or n in theirs})
     model["default_type"] = plugins.DEFAULT_TYPE
 
 
@@ -767,7 +784,7 @@ def plugin_types() -> dict:
             for n, p in plugins.registry().plugins.items()}
 
 
-def page_view(name: str, model: dict, prefix: str, lang: str = i18n.DEFAULT) -> Drawn:
+def page_view(name: str, model: dict, prefix: str, lang: str = i18n.DEFAULT, theirs: dict | None = None) -> Drawn:
     """The context of a page of class B drawn here, from the model a machine answered (its fields by name), under
     prefix (the link's /links/<m>; "" for a machine's own page), its texts in lang; ValueError when it has an address
     it may not use (at the places of _ELSEWHERE_AT) or a name that would leave the machine (_NAMES_AT)."""
@@ -787,7 +804,7 @@ def page_view(name: str, model: dict, prefix: str, lang: str = i18n.DEFAULT) -> 
         # Linked: this panel's links on its own page (a link's machine has none for a link)
         context["machine_links"], context["linked_sections"] = [], []
     elif name == "server_form":
-        server_form_view(context)
+        server_form_view(context, theirs)
     elif name == "options":
         logo = model.get("machine_logo")
         if logo not in (None, "") and not (isinstance(logo, str) and _LOGO.fullmatch(logo)):

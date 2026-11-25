@@ -1121,19 +1121,23 @@ in there opens (an invitation) and a plugin's own pages (under `/x/`).
   or key is set, never its value; of a link where it goes and the SSH host key
   it fixed, never its token; of the machine's SSH key the public half only.
   The notices of a schedule or a workspace, and of Options › Monitoring, come
-  with their site only (`https://hooks.slack.com/…`: a webhook carries its
-  secret in its path), on the machine's page too: a workspace's page and
-  Options show them so in their fields, and a webhook sent back as its site
-  keeps the address saved (a site that stands for none is refused: write the
-  whole address). The webhooks of Options are named by a digest (`ref`), never
-  by their address. Of Options the model never has the SMTP password (whether
+  with their site and a mark (`https://hooks.slack.com/…#a1b2c3d4`: a webhook
+  carries its secret in its path), on the machine's page too: a workspace's
+  page and Options show them so in their fields, and a line sent back as the
+  page showed it keeps the webhook of that mark, two on the same site too. A
+  mark none saved has, a site without its mark, or a text instead of a list
+  is refused: write the whole address. The marks and the names of the webhooks
+  of Options (`ref`) are an HMAC-SHA256 of the address with a key of the
+  machine (`webhook-ref.key` beside the users file, 600, gone with the purge),
+  never the address. Of Options the model never has the SMTP password (whether
   it is set); of a workspace never its SSO provider's secret, nor the values
   of its Odoo options; of Users and a workspace's people whether their second
   factor is on and how many passkeys and sessions they have, never a hash, a
   TOTP secret, a recovery code, a passkey or a session; of Pullers whether a
   publication or a connection has its key. A server's form offers this
-  panel's plugins with their fields (the contract wants them the same as the
-  machine's), never the routes of the machine's word. On the machine's section
+  panel's plugins that the machine has (its contract's plugins), with their
+  fields, never the routes of the machine's word. The id of a handover's
+  reception and the jobs of its banners are names. On the machine's section
   the rows of the instances open under `/links/<name>/`, and Linked is this
   panel's own. What the machine's own page shows the same person
   passes as it is: the text of an error reading a file, which may quote it.
@@ -1156,9 +1160,15 @@ in there opens (an invitation) and a plugin's own pages (under `/x/`).
   pass only as data: JSON, text, CSV, raster images (no SVG), files to save,
   answers without a body; an HTML or script answer is refused with a 502 (and
   in the access log). A browser's `/api` request is asked as JSON, so the
-  machine's reason is what the person reads. **Not refused:** the pages not
-  written here (an invitation, a plugin's own pages under `/x/`) still come as
-  the machine writes them, HTML included.
+  machine's reason is what the person reads. Any other path of such a link that
+  this panel does not write (an action, a file to save) is data the same way,
+  asked as JSON: an HTML answer there is this panel's own «not found» (404).
+  **The machine's HTML passes only for** an invitation (`/invite/<token>`) and a
+  plugin's own pages (`/x/<plugin>/…`), with a line on top: «Page written by
+  lab4 (…): a page of the machine that this panel does not draw». The machine's
+  SVG logo passes as an image only (`Content-Security-Policy: sandbox`). The
+  scripts of the pages written here open only what is one: a job's page whose
+  id is a name, a page of the machine under `/links/<name>/`.
 - **The way back**: on the link's **Edit… › Advanced**, untick **Pages written
   by this panel** (`pages: machine` in the links file): the machine writes its
   own pages again, as before, without a release.

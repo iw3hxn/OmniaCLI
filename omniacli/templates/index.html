@@ -415,7 +415,7 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
     const tr = document.createElement("tr");
     tr.dataset.job = job.id;
     tr.dataset.servers = job.servers.join(" ");
-    const a = text("a", "", job.title); a.href = "{{ prefix }}/jobs/" + job.id;
+    const a = text("a", "", job.title); a.href = omniaJobPage(job.id) || "#";
     tr.insertCell().appendChild(a);
     const servers = tr.insertCell();
     job.servers.forEach((name, i) => {
@@ -464,7 +464,7 @@ const dashFill = (text, values) => text.replace(/\{(\w+)\}/g, (all, k) => (k in 
       : '<svg class="danger-sign" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5 1.5 21h21z" stroke-linejoin="round"/><path class="danger-mark" d="M12 9v5.5M12 17.2v.3" stroke-linecap="round"/></svg>';
     const body = text("div", "toast-body");
     const title = text("a", "toast-title", (link ? link + " › " : "") + job.title);
-    title.href = base + "/jobs/" + job.id;
+    title.href = omniaJobPage(job.id, base) || "#";
     body.append(title, text("div", "toast-text", ok ? DASH_T.finishedOk : (DASH_T.status[job.status] || job.status) + (job.error ? ": " + job.error : "")));
     const close = text("button", "toast-close icon-btn", "");
     close.append(omniaIcon("x", 20));

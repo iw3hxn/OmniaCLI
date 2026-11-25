@@ -371,7 +371,7 @@
     }
     if (!data) return;
     // a customer's user is on its workspace's page, maybe on another machine
-    const next = data.page ? "{{ prefix }}" + data.page : null;
+    const next = data.page ? omniaPath("{{ prefix }}" + data.page) : null;
     if (data.invite_path) { dialog.close(); OmniaInvite.show(name, data, next, email); return; }
     if (!editing && data.token) {
       // a secret: once, in a dialog of its own; the page again when it is closed
