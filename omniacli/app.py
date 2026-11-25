@@ -1550,7 +1550,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             # this machine's own name: a customer is never told which machine it is (shown_name),
                             # «the server» as its map says it
                             here=frozenset({here_name()} - own - members - {"localhost", "omniacli"}),
-                            here_word=i18n.gettext(lang, "the server"))
+                            here_word=i18n.gettext(lang, "the server"),
+                            # the machine's backup destinations (AD-016 constraint 8): never their names nor where
+                            offsite=frozenset({p for d in load_destinations().values() if not d.workspace
+                                               for p in destinations.places(d)} - own - members
+                                              - {p for d in load_destinations().values() if d.workspace in mine
+                                                 for p in destinations.places(d)}),
+                            offsite_word=i18n.gettext(lang, destinations.OF_THE_SERVER))
 
     def mcp_view(workspace: str, found: dict | None, token: str | None) -> CustomerView:
         """What a workspace's MCP token reads of the jobs (customer_view, in English: MCP has no language); found:
@@ -5285,6 +5291,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         leaves any workspace that still names it."""
         if old == new:
             return None
+        await offsite_renamed(old, new)
         async with workspaces_lock:
             changed = {}
             for ws in settings.workspaces.values():
@@ -5296,6 +5303,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if changed == settings.workspaces:
                 return None
             return await store_workspaces(changed)
+
+    async def offsite_renamed(old: str | None, new: str | None) -> None:
+        """Where the backups of a server go follows its name (AD-016 §16.1): renamed, its choices are the new name's;
+        deleted, they go; a new server never inherits the choice of one of before with its name."""
+        async with destinations_lock:
+            try:
+                choices = await asyncio.to_thread(load_choices)
+                changed = False
+                for key in list(choices.instances):
+                    server, _, role = key.partition("/")
+                    if server == new or server == old:
+                        value = choices.instances.pop(key)
+                        changed = True
+                        if server == old and new is not None:
+                            choices.instances[f"{new}/{role}"] = value
+                if changed:
+                    await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+            except (OSError, ConfigError) as exc:
+                _logger.warning("the destinations chosen by %s are not renamed: %s", old or new, exc)
+        if old is not None:
+            await offsite_mirror()
 
     def names_follow(before: Workspace, ws: Workspace, old: str | None, new: str | None) -> Workspace:
         """The main instance and the subdomains of ws after the server old
@@ -15247,6 +15275,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     used.setdefault(name, []).append(inst.key)
         return used
 
+    def offsite_chosen(choices: destinations.Choices) -> dict:
+        """{instance: destination} of the choices that count: an existing production that is not a staging (a choice
+        of a test, a staging or a server gone copies nowhere, and keeps no destination from being deleted)."""
+        live = {i.key for i in offsite_instances()}
+        return {k: v.get("destination") for k, v in choices.instances.items() if k in live}
+
     def offsite_counts(found: dict, choices: destinations.Choices) -> dict:
         """How many productions follow the default (copy to whichever it is) and how many chose their own."""
         whys = [destinations.effective(settings, i, found, choices).why for i in offsite_instances()]
@@ -15358,6 +15392,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if op in ("instance", "view"):
             server, role = str(body.get("server") or ""), str(body.get("role") or "")
             instance = settings.instance(server, role) if role in ROLES else None
+            key = f"{server}/{role}"
+            if op == "instance" and not str(body.get("destination") or "").strip() and (
+                    instance is None or offsite_effective(instance).why in (destinations.FROM_TEST,
+                                                                            destinations.FROM_STAGING)):
+                # a choice left behind (a test's, a staging's, a server gone): taken back by who may, never refused
+                if not (machine_admin(me) if instance is None else me.can(backup_role(instance))):
+                    return 403, {"error": "An admin of the machine takes it back", "code": "forbidden"}
+                async with destinations_lock:
+                    choices = await asyncio.to_thread(load_choices)
+                    if choices.instances.pop(key, None) is not None:
+                        await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+                        access_log.record("instance destination", me.kind, me.name, ip,
+                                          f"{key}: its choice of a destination taken back")
+                return 200, {"ok": True, **(offsite_view(instance, me) if instance is not None else {})}
             if instance is None or (visible_servers(me) is not None and server not in visible_servers(me)):
                 return 404, {"error": f"No instance {server}/{role}", "code": "not_found"}
             if op == "view":
@@ -15445,6 +15493,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if "destination" in payload and str(payload.get("destination") or "") != offsite_legacy(instance, me):
             wanted = str(payload.get("destination") or "")
             view = offsite_view(instance, me)
+            if not wanted and hides_machine_destinations(me):
+                # «nowhere» of that form: for who cannot see the server's default, following it would be a copy
+                # somewhere it did not choose; until slice 8 it changes nothing (no production goes nowhere, D-N1)
+                wanted = None
+        if wanted is not None:
             if wanted and (not view["shown"] or wanted not in
                            {o["value"] for o in view["options"] if o["kind"] in ("machine", "workspace")}):
                 return refuse(f"No destination {wanted} for {instance.key}")
@@ -16979,9 +17032,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not name.endswith(destinations.SUFFIX) or not _BACKUP_NAME.fullmatch(name[:-len(destinations.SUFFIX)]):
             return refuse("No such copy", status.HTTP_404_NOT_FOUND)
         folder = backup_folder(instance)
-        job = jobs.submit(f"Bring back {name[:-len(destinations.SUFFIX)]} from {dest.name}", [instance.key],
+        # a workspace's job (its people read it, and its access log the title) never names the machine's destination
+        said = destinations.said_to(settings, instance, dest)
+        job = jobs.submit(f"Bring back {name[:-len(destinations.SUFFIX)]} from {said or dest.name}", [instance.key],
                           f"manual: {me}", lambda job: destinations.fetch(
-                              job, dest, destinations.instance_folder(instance), name, folder))
+                              job, dest, destinations.instance_folder(instance), name, folder, said))
         return {"job": job.id}
 
     # --- remote destinations of the backups -----------------------------
@@ -16995,8 +17050,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found, choices = load_destinations(), load_choices()
         used = offsite_users(found, choices)
         chosen: dict = {}
-        for key, value in choices.instances.items():
-            chosen.setdefault(value.get("destination"), []).append(key)
+        for key, name in offsite_chosen(choices).items():
+            chosen.setdefault(name, []).append(key)
         return [{**d.public(), "used_by": sorted(used.get(d.name, [])), "chosen_by": sorted(chosen.get(d.name, [])),
                  "default": not d.workspace and d.name == choices.default,
                  "key_shown": destinations.key_shown(choices, d)}
@@ -17054,7 +17109,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refuse(f"{name} is the default destination of this machine: make another the default first, "
                               "or say it is no longer the default")
             users = set(offsite_users(found, choices).get(name, [])) | {
-                k for k, v in choices.instances.items() if v.get("destination") == name}
+                k for k, v in offsite_chosen(choices).items() if v == name}
             if users:
                 return refuse(f"The backups of {', '.join(sorted(users))} go to {name}: choose another first")
             found.pop(name)
@@ -26880,18 +26935,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 data["backup"]["destination"] = chosen
         return data
 
-    async def offsite_adopt(job, steps: dict) -> None:
+    async def offsite_adopt(job, steps: dict, workspace: str, arrived) -> None:
         """The destinations the backup steps of schedules received from another machine name ({instance: name}),
-        made their instances' choices when each is a destination they may use here and they have none (AD-016
-        §16.9); then every step says its effective one again."""
+        made their instances' choices when each is one of workspace's that arrived with them (arrived: their names
+        here) and the instance has none (AD-016 §16.9): never one of this machine's own, which the other machine
+        does not choose; then every step says its effective one again."""
         async with destinations_lock:
             found, choices = await asyncio.to_thread(load_destinations), await asyncio.to_thread(load_choices)
             taken = []
             for key, name in steps.items():
                 server, _, role = key.partition("/")
                 inst = settings.instance(server, role) if role in ROLES else None
-                if inst is None or not name or choices.choice(key) or not destinations.usable(found.get(name), inst,
-                                                                                               settings):
+                dest = found.get(name)
+                if inst is None or not name or name not in arrived or dest is None or dest.workspace != workspace \
+                        or choices.choice(key) or not destinations.usable(dest, inst, settings):
                     continue
                 choices.instances[key] = {"destination": name, "since": destinations.now()}
                 taken.append(f"{key} → {name}")
@@ -27950,6 +28007,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def placement_schedules(job, workspace: str, name: str, payload: dict) -> None:
         """The schedules of an instance placed here and the destinations of its workspace they copy to, from its
         home (AD-014): an instance's schedules only, a destination of that workspace only."""
+        arrived: set = set()
         given = payload.get("destinations")
         if isinstance(given, dict) and given:
             async with destinations_lock:
@@ -27969,6 +28027,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     kept.append(str(dest_name))
                 await asyncio.to_thread(destinations.save_destinations, settings.destinations_file, found)
             job.log(f"The destinations of its workspace: {', '.join(sorted(kept)) or 'none'}")
+            arrived = set(kept)
         given = payload.get("schedules")
         if isinstance(given, dict) and given:
             async with schedules_lock:
@@ -27986,7 +28045,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 scheduler.schedules = updated
             job.log(f"Its schedules: {', '.join(sorted(kept)) or 'none'}")
             await offsite_adopt(job, {updated[n].instance: updated[n].backup.destination for n in kept
-                                      if updated[n].backup is not None and updated[n].backup.destination})
+                                      if updated[n].backup is not None and updated[n].backup.destination},
+                                workspace, arrived)
 
     async def restore_dump(job, ws: Workspace, instance: str, inst: Instance, payload: dict) -> float:
         """The dump the last round of the backups brought ({file, size, hash, counts}: what the other machine
@@ -28249,7 +28309,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 choices.instances.pop(key)
             if mine:
                 await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
-            used = set(offsite_users(found, choices)) | {v.get("destination") for v in choices.instances.values()}
+            used = set(offsite_users(found, choices)) | set(offsite_chosen(choices).values())
             dropped = [n for n, d in found.items() if d.workspace == workspace and n not in used]
             if dropped:
                 await asyncio.to_thread(destinations.save_destinations, settings.destinations_file,
@@ -32125,7 +32185,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         handovers_in.update(hid, sched_map=sched_map)
         job.log(f"Its schedules: {', '.join(kept) or 'none'}")
         await offsite_adopt(job, {updated[n].instance: updated[n].backup.destination for n in kept
-                                  if updated[n].backup is not None and updated[n].backup.destination})
+                                  if updated[n].backup is not None and updated[n].backup.destination},
+                            ws.name, set(dest_map.values()))
         if shift:
             job.log(f"Their hours moved by {shift:+d} h: they run at the same instant in this machine's zone")
         if dest_map:

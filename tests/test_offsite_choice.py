@@ -95,8 +95,8 @@ def test_the_migration_carries_the_backup_steps_once_and_writes_them_back(env):
     app = create_app(settings)
     assert app is not None
     choices = destinations.load_choices(settings.destinations_file)
-    assert {k: v["destination"] for k, v in choices.instances.items()} == {"srv/production": OTHER,
-                                                                           "srv/test": MACHINE}
+    # the test's is not carried: a test has no copy, and a choice of it would keep its destination from going
+    assert {k: v["destination"] for k, v in choices.instances.items()} == {"srv/production": OTHER}
     assert choices.migrated
     prod = settings.instance("srv", "production")
     assert destinations.effective(settings, prod).name == OTHER

@@ -515,37 +515,87 @@ def instance_folder(instance) -> str:
     return f"{instance.server}/{instance.role}"
 
 
-async def upload(job: Job, dest: Destination, backup: Path, folder: str) -> str:
+# the settings of a kind that say where a destination is (never a secret): what a customer does not read of the
+# machine's destinations, with their names and folders (places, said)
+WHERE_SETTINGS = ("host", "endpoint", "url", "account", "root_folder_id", "drive_id")
+# how a customer reads one of the machine's destinations (AD-016 constraint 8)
+OF_THE_SERVER = "a destination of the server"
+
+
+def places(dest: Destination) -> set[str]:
+    """What names a destination to who reads it: its name, its folder (one of a word alone, «backups», is a word of
+    every job: left) and where it is (no secret)."""
+    found = {dest.name, *(str(dest.settings.get(k) or "") for k in WHERE_SETTINGS)}
+    if "/" in dest.path:
+        found.add(dest.path)
+    return {p for p in found if len(p) >= 3}
+
+
+def said_to(settings, instance, dest: Destination) -> str:
+    """How a job of instance names dest: its name, or OF_THE_SERVER when the instance is a workspace's and dest the
+    machine's (its people read the job and the workspace's access log, AD-016 constraint 8)."""
+    return OF_THE_SERVER if not dest.workspace and settings.workspace_of(instance.server) else ""
+
+
+def _hidden(text: str, dest: Destination, said: str) -> str:
+    for word in sorted(places(dest), key=len, reverse=True):
+        text = text.replace(word, said)
+    return text
+
+
+async def upload(job: Job, dest: Destination, backup: Path, folder: str, said: str = "") -> str:
     """The backup encrypted with the destination's key next to it, copied
-    there, the encrypted file deleted here: the name it has there."""
+    there, the encrypted file deleted here: the name it has there. said: how the
+    job names the destination ("" its name, with its folder)."""
     key = pullcrypto.parse_key(dest.key)
     sealed = backup.with_name(f".{backup.name}{SUFFIX}")
-    job.log(f"--- encrypt {backup.name} for {dest.name} (AES-256-GCM)")
+    job.log(f"--- encrypt {backup.name} for {said or dest.name} (AES-256-GCM)")
     try:
         await asyncio.to_thread(pullcrypto.encrypt_file, key, CONTEXT, backup, sealed)
         os.chmod(sealed, 0o600)
         name = backup.name + SUFFIX
-        job.log(f"--- copy to {dest.name} ({dest.label}): {dest.path}/{folder}/{name}")
-        await rclone(dest, "copyto", "--retries", "3", "--low-level-retries", "10", "--stats", "60s",
-                     "--stats-one-line", "-v", str(sealed), remote(dest, folder, name), job=job, timeout=COPY_TIMEOUT)
+        job.log(f"--- copy to {said}: {folder}/{name}" if said else
+                f"--- copy to {dest.name} ({dest.label}): {dest.path}/{folder}/{name}")
+        try:
+            await rclone(dest, "copyto", "--retries", "3", "--low-level-retries", "10", "--stats", "60s",
+                         "--stats-one-line", "-v", str(sealed), remote(dest, folder, name), job=job,
+                         timeout=COPY_TIMEOUT)
+        except JobFailed as exc:
+            if not said:
+                raise
+            raise JobFailed(_hidden(str(exc), dest, said)) from None
     finally:
         sealed.unlink(missing_ok=True)
     return name
 
 
 async def rotate(job: Job, dest: Destination, folder: str, prefix: str,
-                 kept: Callable[[dict], set], suffix: str = SUFFIX) -> None:
+                 kept: Callable[[dict], set], suffix: str = SUFFIX, said: str = "") -> None:
     """The copies there whose name starts with prefix that kept ({name:
     datetime} -> the names kept: the schedule's rotation) does not keep, deleted."""
-    found = {r["name"]: datetime.datetime.fromisoformat(r["time"]) for r in await listing(dest, folder, suffix)
-             if r["name"].startswith(prefix) and r["time"]}
-    for name in sorted(set(found) - kept(found), key=lambda n: found[n]):
-        job.log(f"--- delete {name} on {dest.name}: out of the rotation")
-        await rclone(dest, "deletefile", remote(dest, folder, name))
+    try:
+        found = {r["name"]: datetime.datetime.fromisoformat(r["time"]) for r in await listing(dest, folder, suffix)
+                 if r["name"].startswith(prefix) and r["time"]}
+        for name in sorted(set(found) - kept(found), key=lambda n: found[n]):
+            job.log(f"--- delete {name} on {said or dest.name}: out of the rotation")
+            await rclone(dest, "deletefile", remote(dest, folder, name))
+    except JobFailed as exc:
+        if not said:
+            raise
+        raise JobFailed(_hidden(str(exc), dest, said)) from None
 
 
-async def fetch(job: Job, dest: Destination, folder: str, name: str, local_dir: Path) -> Path:
+async def fetch(job: Job, dest: Destination, folder: str, name: str, local_dir: Path, said: str = "") -> Path:
     """A copy brought back and decrypted into local_dir, as the backup it was."""
+    try:
+        return await _fetch(job, dest, folder, name, local_dir)
+    except JobFailed as exc:
+        if not said:
+            raise
+        raise JobFailed(_hidden(str(exc), dest, said)) from None
+
+
+async def _fetch(job: Job, dest: Destination, folder: str, name: str, local_dir: Path) -> Path:
     if not name.endswith(SUFFIX) or "/" in name or name.startswith("."):
         raise JobFailed(f"{name} is not a copy of a backup")
     local_dir.mkdir(parents=True, exist_ok=True)

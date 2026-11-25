@@ -42,6 +42,10 @@ class CustomerView:
     # this machine's own names (its host name), and how the customer reads them: "the server" (the map's word)
     here: frozenset[str] = frozenset()
     here_word: str = "the server"
+    # the machine's backup destinations: their names, folders and where they are (destinations.places), and how the
+    # customer reads them (AD-016 constraint 8)
+    offsite: frozenset[str] = frozenset()
+    offsite_word: str = "a destination of the server"
 
     def who(self, name: str) -> str:
         """Who acted, as the customer may read it: its own users and tokens
@@ -69,6 +73,8 @@ class CustomerView:
                            else self.provider, value)
         for name in sorted(self.here - self.links - self.machines, key=len, reverse=True):
             value = re.sub(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", self.here_word, value)
+        for name in sorted(self.offsite, key=len, reverse=True):
+            value = re.sub(rf"(?<![\w-]){re.escape(name)}(?![\w-])", self.offsite_word, value)
         value = _UNIT_PATH.sub(lambda m: "…" + m.group(0)[m.group(0).rindex("."):], value)
         return _HOST_PATH.sub(lambda m: "…/" + m.group(0).rstrip("/").rsplit("/", 1)[-1], value)
 

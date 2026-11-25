@@ -337,9 +337,23 @@ Fetta 1, «La scelta», sul ramo `ad016-s1-choice` da `131847a`.
   chiave), `acme-odoo` alla predefinita; tornati a 2026.1.5527, il rilascio di prima legge `sftp-a` e `sftp-ws` nei
   passi e il backup automatico di `acme-zipt` finisce in `sftp-ws`; di nuovo il codice nuovo, `acme-odoo` segue
   ancora la predefinita. Criteri 1 e 2 di UX-016 §18 con Playwright, 1440 e 375, chiaro e scuro, admin e P2.
+- **Dopo la revisione di `3f09014`.**
+  - Le persone di un workspace non leggono mai nome, cartella o host di una destinazione della macchina: il job la
+    chiama «a destination of the server» (`destinations.said_to`, titolo, righe ed errori di copia, rotazione e
+    «Riporta qui», che finiscono anche nel registro del workspace), e `CustomerView` toglie dal job letto da loro i
+    `places` delle destinazioni della macchina (anche le righe di rclone o di un rilascio di prima).
+  - La migrazione non porta le scelte di un test, di una staging o di un'istanza che non c'è. Una scelta rimasta
+    (di un test, di una staging, di un server tolto) non blocca Elimina né l'uscita di un workspace
+    (`offsite_chosen`), e `""` la toglie sempre. Rinominare o togliere un server sposta o toglie le sue scelte; un
+    server nuovo non eredita quella di uno di prima con lo stesso nome.
+  - `offsite_adopt` adotta solo una destinazione del workspace arrivata nella stessa richiesta (spostamento,
+    consegna), mai una della macchina che riceve.
+  - Un centrale di questo rilascio che disegna la scheda Backup di una macchina del rilascio di prima (senza
+    `offsite`) mostra il suo «Copia anche in» e lo salva con i backup automatici, sempre con la destinazione di
+    adesso. Il «da nessuna parte» di quel modulo, per chi non vede la predefinita, non cambia niente fino alla fetta 8.
+  - `tests/test_offsite_review.py` (7 test, rossi su `3f09014`).
 - **Resta per le fette dopo.** La coda e gli altri tipi di backup (fetta 2), gli avvisi «da guardare» e la
-  campanella, `places`. Un centrale di questo rilascio che disegna la scheda Backup di una macchina del rilascio di
-  prima non mostra il campo (il modello non ha `offsite`): la scelta lì si fa dalla pagina della macchina.
+  campanella, `places`.
 
 ## 11. Alternative scartate
 

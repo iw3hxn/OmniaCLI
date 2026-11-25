@@ -1381,6 +1381,7 @@ dialog.sd { --dialog-w: 560px; }
     offChoiceTitle: {{ _("Every backup of this instance goes here instead of the server's default") | tojson }},
     offServerTitle: {{ _("An admin of the server chose one of its destinations: it stays as long as this field is not changed") | tojson }},
     offNoRight: {{ _("An admin changes it.") | tojson }},
+    offLegacyLabel: {{ _("Copy also to") | tojson }}, offLegacyNowhere: {{ _("nowhere: this machine only") | tojson }},
     checked: {{ _("Restore tried") | tojson }}, verify: {{ _("Try a restore") | tojson }},
     archiveKind: {{ _("full archive") | tojson }},
     verifyTitle: {{ _("Checks the file is whole and restores it for a try into a database of its own beside the instance, then drops it: the instance does not change. It is a job; the outcome shows in Restore tried.") | tojson }},
@@ -2527,7 +2528,7 @@ dialog.sd { --dialog-w: 560px; }
   }
 
   // the automatic backups of the instance: its schedule, read and saved here
-  let abBefore = "", abCanEdit = false;
+  let abBefore = "", abCanEdit = false, offLegacy = false, offLegacyValue = "";
   const abValues = () => JSON.stringify([...document.getElementById("ab-form").querySelectorAll("input, select")]
     .map((i) => i.type === "checkbox" ? i.checked : i.value));
   function abChanged() {
@@ -2542,14 +2543,16 @@ dialog.sd { --dialog-w: 560px; }
     document.getElementById("ab-zone").textContent = T.abZone;
     for (const k of ["daily", "weekly", "monthly"]) document.getElementById(`ab-${k}`).value = data[k];
     for (const input of form.querySelectorAll("[data-ab-option]")) input.checked = !!data.options[input.dataset.abOption];
-    drawOffsite(data.offsite);
+    // a machine of the release before (a central panel draws its page): no offsite, its «Copy also to» instead
+    offLegacy = !("offsite" in data);
+    if (offLegacy) drawLegacyOffsite(data); else drawOffsite(data.offsite);
     document.getElementById("ab-notify").value = (data.notify || []).join(", ");
     document.getElementById("ab-verify-row").hidden = !data.has_verify;
     document.getElementById("ab-verify").checked = !!data.verify;
     document.getElementById("ab-archive").checked = !!data.archive;
     for (const input of form.querySelectorAll("input, button, select")) input.disabled = !data.can_edit;
     abCanEdit = data.can_edit; abBefore = abValues(); abChanged();
-    loadRemoteCopies(data.offsite && data.offsite.effective_kind);
+    loadRemoteCopies(offLegacy ? data.destination : data.offsite && data.offsite.effective_kind);
     // the line on top: what the automatic backups do, the last one, the last restore tried
     const line = document.getElementById("ab-status"), said = [];
     line.hidden = false;
@@ -2560,8 +2563,13 @@ dialog.sd { --dialog-w: 560px; }
       said.push((yours ? T.abOnYours.replace("{time}", yours).replace("{server}", data.time) : T.abOn.replace("{time}", data.time))
         .replace("{zone}", data.zone || window.serverZone));
       said.push(T.abKeeps.replace("{daily}", data.daily).replace("{weekly}", data.weekly).replace("{monthly}", data.monthly));
-      const off = data.offsite || {};
-      said.push(!off.effective_kind ? T.abNoCopy : off.effective ? T.abCopy.replace("{name}", off.effective) : T.offCopyHidden);
+      if (offLegacy) {
+        const dest = (data.destinations || []).find((d) => d.name === data.destination);
+        said.push(data.destination ? T.abCopy.replace("{name}", dest ? `${dest.label} ${dest.name}` : data.destination) : T.abNoCopy);
+      } else {
+        const off = data.offsite || {};
+        said.push(!off.effective_kind ? T.abNoCopy : off.effective ? T.abCopy.replace("{name}", off.effective) : T.offCopyHidden);
+      }
     }
     if (data.last) said.push(T.abLast.replace("{time}", whenText(data.last.time)).replace("{status}", T.statuses[data.last.status] || data.last.status)
       + (data.last.status === "failed" && data.last.message ? ` (${data.last.message})` : ""));
@@ -2603,9 +2611,26 @@ dialog.sd { --dialog-w: 560px; }
     }
     if (!off.can_edit) document.getElementById("off-note").textContent = T.offNoRight;
   }
+  // the «Copy also to» of a machine of the release before: its destination saved with its automatic backups, as
+  // that release's page did (its backup-schedule takes destination; "" there means this machine only)
+  function drawLegacyOffsite(data) {
+    const row = document.getElementById("off-row"), select = document.getElementById("off-dest");
+    if (!row) return;
+    row.hidden = false;
+    row.querySelector("label").textContent = T.offLegacyLabel;
+    select.replaceChildren(new Option(T.offLegacyNowhere, ""));
+    for (const d of data.destinations || []) select.append(new Option(`${d.name} · ${d.label}`, d.name));
+    select.value = offLegacyValue = data.destination || "";
+    select.disabled = !data.can_edit;
+    document.getElementById("off-none").hidden = !!data.destination;
+    document.getElementById("off-link").hidden = true;
+    document.getElementById("off-dest-hint").hidden = true;
+    if (!data.can_edit) document.getElementById("off-note").textContent = T.offNoRight;
+  }
   document.getElementById("off-dest")?.addEventListener("change", async (event) => {
     const box = document.querySelector('[data-panel="backups"]'), note = document.getElementById("off-note");
     note.textContent = "";
+    if (offLegacy) { await abSave({destination: event.target.value}); note.textContent = T.offNext; return; }
     const resp = await fetch(`${box.dataset.api}/backup-destination`, {method: "POST",
       headers: {"Content-Type": "application/json", Accept: "application/json"},
       body: JSON.stringify({destination: event.target.value})}).catch(() => null);
@@ -2663,15 +2688,18 @@ dialog.sd { --dialog-w: 560px; }
     const line = document.getElementById("ab-status");
     line.hidden = false; line.className = "ab-line banner warn"; line.textContent = T.abUnread;
   }
-  document.getElementById("ab-form")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const box = document.querySelector('[data-panel="backups"]'), form = event.target, options = {};
+  document.getElementById("ab-form")?.addEventListener("submit", (event) => { event.preventDefault(); abSave({}); });
+  async function abSave(extra) {
+    const box = document.querySelector('[data-panel="backups"]'), form = document.getElementById("ab-form"), options = {};
     for (const input of form.querySelectorAll("[data-ab-option]")) options[input.dataset.abOption] = input.checked;
     const body = {enabled: document.getElementById("ab-enabled").checked, time: window.toServerTime(document.getElementById("ab-time").value), options,
                   verify: document.getElementById("ab-verify").checked,
                   archive: document.getElementById("ab-archive").checked,
                   notify: document.getElementById("ab-notify").value.split(/[\s,;]+/).filter(Boolean)};
     for (const k of ["daily", "weekly", "monthly"]) body[k] = document.getElementById(`ab-${k}`).value;
+    // a machine of the release before writes the destination it is given: always its own, or the one chosen
+    if (offLegacy) body.destination = offLegacyValue;
+    Object.assign(body, extra);
     const error = document.getElementById("ab-error");
     error.textContent = "";
     const resp = await fetch(`${box.dataset.api}/backup-schedule`, {method: "POST",
@@ -2679,7 +2707,7 @@ dialog.sd { --dialog-w: 560px; }
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) { error.textContent = data.error || data.detail || T.refused; return; }
     drawBackupSchedule(data, true);
-  });
+  }
 
   // a new staging, a staging deleted: a job, followed on its page
   async function post(url, body, confirmText) {

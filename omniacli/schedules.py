@@ -309,7 +309,13 @@ def migrate_offsite(settings, schedules: dict[str, Schedule]) -> list[str]:
     if choices.migrated:
         return []
     moved = []
+    staging = destinations.staging_servers(settings)
     for sch in _backup_steps_first(schedules):
+        # a test's or a staging's has no copy (D-N3), an instance not here none either: no choice nobody could take
+        # back, that would keep its destination from being deleted
+        server, _, role = sch.instance.partition("/")
+        if role != "production" or server in staging or settings.instance(server, role) is None:
+            continue
         if sch.backup.destination and sch.instance not in choices.instances:
             choices.instances[sch.instance] = {"destination": sch.backup.destination, "since": destinations.now()}
             moved.append(sch.instance)
@@ -616,14 +622,16 @@ class Scheduler:
             found = destinations.effective(self.settings, instance)
             dest = found.destination
             if found.why == destinations.FROM_NONE:
+                # (the name it chose is not said: one of the machine's would reach a workspace's people)
                 job.log(f"--- no off-site copy: {instance.key} has no destination"
-                        + (f" it may use ({found.chosen})" if found.chosen else "")
-                        + " and this machine has no default one")
+                        + (" it may use" if found.chosen else "") + " and this machine has no default one")
             if dest is not None:
                 where = destinations.instance_folder(instance)
-                await destinations.upload(job, dest, made, where)
+                said = destinations.said_to(self.settings, instance, dest)
+                await destinations.upload(job, dest, made, where, said)
                 await destinations.rotate(job, dest, where, SCHEDULED_PREFIX,
-                                          lambda times: rotation_kept(times, step.daily, step.weekly, step.monthly))
+                                          lambda times: rotation_kept(times, step.daily, step.weekly, step.monthly),
+                                          said=said)
             if step.verify_weekday is not None and datetime.date.today().weekday() == step.verify_weekday \
                     and instance.plugin.has_verify:
                 await backupcheck.verify(job, instance, made)
