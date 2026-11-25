@@ -1998,6 +1998,7 @@ dialog.sd { --dialog-w: 560px; }
                ghMade: {{ _("Webhook of {repo} on GitHub: made by OmniaCLI ({url}).") | tojson }},
                ghWhy: {{ _("Webhook of {repo} on GitHub not made: {why}") | tojson }},
                ghNone: {{ _("Webhook of {repo} on GitHub: none (it is made when the CI is switched on).") | tojson }},
+               ghCentral: {{ _("The instance has no public name: GitHub calls the central panel, which passes each push here, so this CI depends on the central panel. Give the instance a name in Addresses, then switch the CI on again.") | tojson }},
                ghJob: {{ _("The webhooks on GitHub follow the switch:") | tojson }}, ghJobLink: {{ _("the job") | tojson }},
                ghJobTitle: {{ _("Opens the job that makes or takes away the webhooks on GitHub, with what it did") | tojson }}};
     const $ = (id) => document.getElementById(id);
@@ -2027,6 +2028,8 @@ dialog.sd { --dialog-w: 560px; }
         p.textContent = r.made ? D.ghMade.replace("{repo}", r.repository).replace("{url}", r.url)
                       : r.why ? D.ghWhy.replace("{repo}", r.repository).replace("{why}", r.why)
                       : D.ghNone.replace("{repo}", r.repository);
+        // no public name: the central panel forwards its pushes here (AD-018 slice 4), said as a warning
+        if (r.made && r.central) { p.className = "warn-line"; p.textContent += " " + D.ghCentral; }
         return p;
       }));
       if (data.github_job) {

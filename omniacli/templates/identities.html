@@ -50,6 +50,7 @@
 <section class="panel" aria-labelledby="idn-home-title" id="idn-home-panel" data-on="{{ 'yes' if home.on else 'no' }}">
   <h2 id="idn-home-title">{{ _("This panel as the home of its workspaces") }}</h2>
   <p class="muted">{{ _("Switched on, the people and the tokens of the imported workspaces log in on this panel, with the same password and the same app; each request of theirs goes to the machine with their scope, and the machine checks it again. Their login on the machine stays.") }}</p>
+  <p class="muted" id="idn-home-hooks">{{ _("The webhooks of their CI follow the switch, in a job of the machine: on, they move onto the instances' own names, so that a push deploys even with this panel stopped; an instance with no public name stays on this panel's portal, which passes its pushes to the machine. Off, they go back. The same webhooks on GitHub, with the same secrets.") }}</p>
   {% if home.on %}
   <dl class="idn-facts">
     <dt>{{ _("Switched on") }}</dt><dd>{{ home.at | moment }} · {{ home.by }}</dd>

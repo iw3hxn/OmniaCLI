@@ -1714,6 +1714,33 @@ second call within 10 minutes gets the job of the first, and a production
 lists the commit once. The Modules tab says, for each repository of the
 instance on GitHub, whether its webhook is made (its address) or why not.
 
+**The webhook and the central panel** (AD-018 §18.5.1, slice 4): the CI of
+a machine does not depend on the central panel that serves the people of its
+workspaces. When the central panel's switch «Serve them here…» goes on for a
+machine (Links › Identities), the machine runs a job, *GitHub webhooks of
+<workspaces>*, that rewrites the webhook OmniaCLI made for their instances
+off the portal's address onto an instance's own name
+(`https://<instance's name>/.omniacli/hooks/github/<id>`): the same webhook
+on GitHub (its id, *moved from … to …, the same webhook with the same
+secret*), with the token the instance already has. A push then deploys with
+the central panel stopped. An instance with no public name goes onto the
+central panel's portal (`https://<central's portal>/hooks/github/<id>`, the
+address the switch tells the machine): the central panel passes each push to
+the machine through its link as it came (body, signature, event, delivery;
+never its cookies), the machine checks the signature, and its answer goes
+back to GitHub; the central panel has no secret of it. That row of the
+Modules tab is a warning: the CI depends on the central panel, until the
+instance has a name in Addresses and its CI is switched on again. Switched
+off, the same job puts the webhooks back on the machine's portal (or names).
+The central panel learns which webhooks it passes on from the machine
+(`GET /api/identity/v1/home`, its admin link only: their ids, never a
+secret), asked again at most every 30 s when GitHub calls one it does not
+know; one of nobody's is refused (403) and nothing reaches a machine. The
+answer of the switch (page, `POST /api/v1/links/{name}/identities/home`,
+MCP `identity_home`) carries the machine's job as `hooks_job`; the job and the
+forwarded calls are in the access logs of the machine and of the central
+panel.
+
 **An instance deleted** (its page, Configure › Servers › Delete, or a
 workspace deleted) runs the same sync as its CI switched off: its CI is
 forgotten (an instance made again with its name starts with the CI off),

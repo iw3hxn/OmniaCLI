@@ -1214,7 +1214,10 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         and app, their tokens call this panel's REST API and MCP, and every
         request goes to the machine with their scope (the machine is told; its
         own login stays). on=false: no more. A workspace named like one here
-        or of another import's refuses it. confirm = the link's name."""
+        or of another import's refuses it. The webhooks of their CI follow
+        (AD-018 slice 4): hooks_job is the machine's job that moves them onto
+        the instances' own names (back, when off), the same webhooks with the
+        same secrets. confirm = the link's name."""
         return await identities(ctx, "home", link, confirm=confirm, on=on)
 
     # --- the protection of this panel (AD-017 slice 7): the pages' code (app.central_backup_act), the same answers

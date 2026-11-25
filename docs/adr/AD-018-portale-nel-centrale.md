@@ -541,6 +541,71 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
    - *Prova*: un webhook sull'indirizzo del portale viene riscritto sul nome dell'istanza, con lo stesso id. Con lab3
      fermo, un push fa il deploy della test su lab4.
    - *Stima*: 1 g.
+
+   **Com'è nel codice (fetta 4).** In `app.py`, accanto al codice dei webhook di GitHub e all'interruttore della fetta 2.
+   - **Quando.** L'interruttore «Servili qui…» del centrale manda alla macchina anche l'indirizzo del suo portale
+     (`POST /api/identity/v1/home`, campo `portal`, solo `https://<nome>`); la macchina lo tiene in
+     `central-home.json`. Se cambia il centrale di un W (acceso, spento, un altro portale), la macchina avvia un job
+     normale, «GitHub webhooks of <W>», con le sue righe e il suo esito nel registro della macchina. Non parte se i
+     server di quei W non hanno né una CI accesa né un webhook fatto da OmniaCLI. La risposta dell'interruttore (pagina,
+     REST, MCP `identity_home`) porta l'id del job, `hooks_job`.
+   - **Cosa riscrive.** Il job fa la stessa sincronizzazione di «CI accesa di nuovo» (`github_sync`): stesso `rid`,
+     stesso segreto, il webhook trovato per id e cambiato con `PATCH`, mai rifatto. Con il token GitHub che le istanze
+     hanno già. La riga del job dice «moved from … to …, the same webhook with the same secret».
+   - **L'indirizzo** (`github_hook_base`). Per un W servito da un centrale l'ordine cambia:
+     1. il nome di un'istanza;
+     2. il portale del centrale;
+     3. il portale della macchina.
+
+     Per gli altri W resta quello di oggi: il portale della macchina, poi il nome. Spento l'interruttore, i webhook
+     tornano così.
+   - **L'istanza senza nome pubblico** va sul portale del centrale. Il centrale riceve `/hooks/github/<id>`, che non è
+     suo, e lo passa alla macchina com'è arrivato, attraverso il collegamento:
+     - passano il corpo e le intestazioni di GitHub (firma, evento, consegna, content type), mai i cookie;
+     - passa la risposta della macchina;
+     - il centrale non ha il segreto: la firma la controlla la macchina;
+     - una macchina che non risponde dà 502;
+     - un id di nessuno dà 403, e alle macchine non arriva niente.
+
+     Gli id da inoltrare li dice la macchina, nella GET `/api/identity/v1/home` (`hooks`), solo al collegamento admin
+     del centrale e senza segreti. Il centrale la richiede al più ogni 30 s, quando GitHub chiama un id che non conosce.
+     Ogni inoltro sta nel registro del centrale, con `via`.
+   - **La pagina.** La riga del webhook nella scheda Moduli dell'istanza è un avviso: «L'istanza non ha un nome
+     pubblico: GitHub chiama il pannello centrale… questa CI dipende dal pannello centrale». Lo dice anche il job. La
+     pagina Identità del centrale dice che i webhook seguono l'interruttore.
+   - **Provato.** Nei test, `tests/test_central_hooks.py`, 3 test con un GitHub finto: tutti falliscono su `6ea4649`.
+     Sul lab il 25/11/2026, con il codice di questo ramo sul pacchetto 2026.1.5525. Il collegamento è HTTP su
+     127.0.0.1, non SSH. lab3 e lab4 erano occupati da un'altra fetta, e un secondo container non partiva: l'host ha
+     finito le istanze inotify (128). Per questo su un `lab5` usa e getta, poi eliminato, girano due processi:
+     - la macchina, il servizio `omniacli` sulla 8090;
+     - il centrale, un secondo OmniaCLI dallo stesso venv, cartella e porta sue (8091), unità transitoria
+       `omniacli-central`.
+
+     Il GitHub finto è `fakegh.py` (API e git su https, una CA del lab nel trust store). nginx serve i nomi dei webhook
+     con un certificato autofirmato. Il W `acme` ha `acme-main`, di tipo generico: test sul branch `test`, riavvio da
+     uno script init.d. I nomi puntano a 127.0.0.1. I risultati:
+     - CI accesa: webhook 1 su `https://portal.omnia-lab5.example.net/hooks/github/Ig50LFYe7hDp`;
+     - interruttore acceso: job di 1 s, il webhook 1 va su
+       `https://main.test.acme.omnia-lab5.example.net/.omniacli/hooks/github/Ig50LFYe7hDp`, con la stessa impronta del
+       segreto e senza nessun POST di un webhook nuovo;
+     - centrale fermato (8091 non risponde): un commit sul branch `test`, e la consegna del GitHub finto al nome dà
+       202, deploy `success`; la test è sul commit spinto (`4de9348`);
+     - interruttore spento: il webhook 1 torna sul portale della macchina;
+     - W senza dominio, interruttore acceso: il webhook 1 va su `https://central.omnia-lab5.example.net/hooks/…`; la
+       consegna passa dal centrale (202, «forwarded to lab5m: 202» nel suo registro) e fa il deploy di `a142fbe`;
+     - centrale fermato: la consegna dà 502 (nginx), niente deploy. È la dipendenza che la pagina dichiara;
+     - spento di nuovo: torna sul portale della macchina.
+
+     I segreti (webhook, token finto, token del collegamento, password) cercati in 32 file delle due cartelle, tranne
+     i file che li tengono: 0 trovati. La consegna l'ha fatta il GitHub finto, non GitHub: nessun repository vero è
+     stato usato.
+   - **Scostamenti.** (1) Il «passaggio» della fetta 5 non c'è ancora: oggi a riscrivere è l'interruttore della fetta 2,
+     e la fetta 5 lo riusa. (2) Il portale della macchina resta come ultima scelta, finché la fetta 5 non lo toglie.
+   - **Resta aperto.**
+     - Un nome dato dopo all'istanza non riscrive il webhook da solo: serve riaccendere la CI, come dice la pagina.
+     - Un portale del centrale che cambia indirizzo si dice alla macchina solo rifacendo l'interruttore.
+     - Un GitHub che rifiuta durante il job lascia il webhook dov'era, con il motivo, e lo riprova la notte
+       (`github_retry`).
 5. **Il passaggio di una macchina e il ritorno** (18.3): congelamento, record di casa, login locale spento, inviti per il
    secondo fattore perso, 7 giorni, cancellazione dei segreti, registro unito.
    - *Prova* su lab4:
