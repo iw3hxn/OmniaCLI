@@ -30,7 +30,7 @@
  "No key to confirm: make one first": "Nessuna chiave da confermare: creane prima una",
  "No key yet. Make it: the backups are sealed to it, and only its passphrase opens them.": "Nessuna chiave per ora. Creala: i backup si sigillano con lei, e solo la sua passphrase li apre.",
  "None yet.": "Nessuno per ora.",
- "Off: only when you press Back up now": "Spento: solo quando premi Salva adesso",
+ "Off: only when you press Back up now": "Se lo spegni, il backup parte solo quando premi Backup adesso",
  "Passphrase": "Passphrase",
  "Protection of this panel": "Protezione di questo pannello",
  "Replace the key of this panel's backup? The backups made with it open only with its passphrase: keep that one too. The new key's backups do not run until you confirm its passphrase.": "Sostituire la chiave del backup di questo pannello? I backup fatti con questa chiave si aprono solo con la sua passphrase: conserva anche quella. I backup della chiave nuova non partono finché non ne confermi la passphrase.",
