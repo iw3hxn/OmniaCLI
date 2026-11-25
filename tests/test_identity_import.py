@@ -43,6 +43,7 @@ REFRESH_TOKEN = "ort_refresh-token-of-elena-0123456789"
 INVITE_TOKEN = "invite-token-of-fabio-0123456789"
 PUBLIC_KEY = b"cose-public-key-of-bruno-0123456789"
 HOOK_SECRET = "hook-secret-of-the-repo-0123456789"
+GID = "0123456789abcdef"
 
 
 def files_of(folder) -> dict[str, str]:
@@ -99,7 +100,7 @@ async def pair(env, tmp_path):
     store = oauth.OAuthStore(m.jobs_dir.parent / oauth.FILE)
     now = time.time()
     store.clients["c1"] = {"id": "c1", "name": "Claude", "kind": "dynamic", "secret": oauth.digest("c1-secret-012345")}
-    store.grants["g1"] = {"id": "g1", "name": "oauth:elena:claude:g1g1", "user": "elena", "workspace": "beta",
+    store.grants[GID] = {"id": GID, "name": f"oauth:elena:claude:{GID[:4]}", "user": "elena", "workspace": "beta",
                           "client_id": "c1", "client_name": "Claude", "client_kind": "dynamic", "redirect_host": "claude.ai",
                           "level": "read", "servers": [], "resource": f"https://{MACHINE_PORTAL}/mcp", "created": now,
                           "ends": now + 86400 * 30, "days": 30, "used": 0, "refreshed": 0,
@@ -203,7 +204,7 @@ async def test_the_import_keeps_the_same_hashes_and_a_totp_code_passes(pair):
     assert record["workspaces"]["acme"]["member_roles"] == {"carla": "backup-only"}
     assert record["workspaces"]["beta"]["tokens"]["t-dario"]["hash"] == hash_token(WORKSPACE_TOKEN)
     assert "machine-ci" not in json.dumps(record)
-    assert record["workspaces"]["beta"]["grants"]["g1"]["refresh"] == oauth.digest(REFRESH_TOKEN)
+    assert record["workspaces"]["beta"]["grants"][GID]["refresh"] == oauth.digest(REFRESH_TOKEN)
     # a code computed from the secret passes on the central (the check slice 2's login calls), once
     at = time.time()
     code = totp.totp(SECRET, at)
@@ -498,3 +499,96 @@ async def test_a_workspace_another_import_brought_is_taken(pair):
     assert {w["name"]: w["taken_here"] for w in plan["workspaces"]} == {"acme": True, "beta": True}
     # and its people too: each arrives with its workspace's name
     assert plan["renamed"]["anna"] == "anna.acme" and plan["renamed"]["dario"] == "dario.beta"
+
+
+# --- the second review: tokens, grants and workspaces named like this panel's ------------------------------------
+
+TH = "sha256$" + "a" * 64
+
+
+def test_a_token_named_like_one_here_arrives_renamed_with_its_person():
+    bad = package(workspaces=ws_with(tokens={"tester": {"hash": TH, "role": "admin"}}, token_people={"tester": "anna"}))
+    record = identityimport.imported(bad, set(), "m1", "x", "now", taken_tokens={"tester"})
+    acme = record["workspaces"]["acme"]
+    assert set(acme["tokens"]) == {"tester.acme"} and acme["token_people"] == {"tester.acme": "anna"}
+    assert record["token_names"] == {"tester": "tester.acme"}
+    assert identityimport.summary(record)["renamed_tokens"] == {"tester": "tester.acme"}
+    # one token name in two of its workspaces is refused
+    twice = package(people={"anna": {"hash": H}, "bea": {"hash": H}}, workspaces={
+        "acme": {"members": {"anna": "admin"}, "tokens": {"t": {"hash": TH, "role": "user"}}},
+        "beta": {"members": {"bea": "admin"}, "tokens": {"t": {"hash": TH, "role": "user"}}}})
+    with pytest.raises(identityimport.IdentityImportError, match="another of its workspaces"):
+        identityimport.imported(twice, set(), "m1", "x", "now")
+
+
+def grant(**more):
+    return {"id": GID, "name": f"oauth:anna:claude:{GID[:4]}", "user": "anna", "workspace": "acme", **more}
+
+
+@pytest.mark.parametrize("given, why", [
+    ({"g1": grant()}, "an id that is not its own"),
+    ({GID: grant(id="other")}, "an id that is not its own"),
+    ({GID: grant(name="oauth:carlo:claude:abcd")}, "not the name of its person's grant"),
+    ({GID: grant(name=f"oauth:anna:claude:ffff")}, "not the name of its person's grant"),
+    ({GID: grant(name="token-of-the-panel")}, "not the name of its person's grant"),
+])
+def test_a_grant_is_the_grant_of_its_person(given, why):
+    with pytest.raises(identityimport.IdentityImportError, match=why):
+        identityimport.imported(package(workspaces=ws_with(grants=given)), set(), "m1", "x", "now")
+
+
+def test_a_grant_follows_its_renamed_person_and_never_takes_one_here():
+    record = identityimport.imported(package(workspaces=ws_with(grants={GID: grant()})), {"anna"}, "m1", "x", "now")
+    kept = record["workspaces"]["acme"]["grants"][GID]
+    assert kept["user"] == "anna.acme" and kept["name"] == f"oauth:anna.acme:claude:{GID[:4]}"
+    for taken in (GID, f"oauth:anna:claude:{GID[:4]}", f"oauth:anna.acme:claude:{GID[:4]}"):
+        with pytest.raises(identityimport.IdentityImportError, match="one of this panel's or of another import's"):
+            identityimport.imported(package(workspaces=ws_with(grants={GID: grant()})), {"anna"}, "m1", "x", "now",
+                                    taken_grants={taken})
+
+
+def test_a_workspace_named_like_one_here_is_blocking():
+    dry = {"format": 1, "portal": "", "workspaces": {
+        "acme": {"people": [], "tokens": [{"name": "tester"}]}, "beta": {"people": []}}}
+    shown = identityimport.plan(dry, set(), "", ["acme"], {"tester"})
+    assert shown["blocking"] == ["acme"]
+    assert [(w["name"], w["blocking"]) for w in shown["workspaces"]] == [("acme", True), ("beta", False)]
+    assert shown["renamed_tokens"] == {"tester": "tester.acme"}
+
+
+async def test_the_dry_run_says_the_tokens_and_workspaces_taken_here(pair):
+    made = await pair.post("/api/access/tokens/save", headers=POST, json={"name": "t-dario", "role": "user",
+                                                                           "new": True})
+    assert made.status_code == 200
+    plan = (await pair.get("/api/identities/lab4", headers=ADMIN)).json()["plan"]
+    assert plan["renamed_tokens"] == {"t-dario": "t-dario.beta"} and plan["blocking"] == []
+    beta = next(w for w in plan["workspaces"] if w["name"] == "beta")
+    assert {"item": "renamed_tokens", "count": 1, "verdict": "same", "who": "",
+            "names": {"t-dario": "t-dario.beta"}} in beta["items"]
+    done = (await pair.post("/api/identities/lab4/import", headers=POST, json={"confirm": "lab4"})).json()["imported"]
+    assert done["renamed_tokens"] == {"t-dario": "t-dario.beta"}
+    record = identityimport.Store(pair.app.state.settings.jobs_dir.parent).load("lab4")
+    assert record["workspaces"]["beta"]["token_people"] == {"t-dario.beta": "dario"}
+    # another link's import of the same machine: its workspaces block, its tokens and grants are taken
+    plan = (await pair.get("/api/identities/lab5", headers=ADMIN)).json()["plan"]
+    assert plan["blocking"] == ["acme", "beta"] and plan["renamed_tokens"] == {"t-dario": "t-dario.beta-2"}
+    refused = await pair.post("/api/identities/lab5/import", headers=POST, json={"confirm": "lab5"})
+    assert refused.status_code == 502 and "is one of this panel's or of another import's" in refused.json()["error"]
+    page = (await pair.get("/identities/lab5", headers={**ADMIN, "Accept": "text/html"})).text
+    assert 'data-blocking="acme"' in page and "cannot pass to this panel until this workspace is renamed" in page
+
+
+def test_the_check_refuses_a_hash_changed_while_it_verified(tmp_path, monkeypatch):
+    store = identityimport.Store(tmp_path)
+    store.save("m1", identityimport.imported(package(people={"anna": {"hash": H, "second_factor": {
+        "secret": "JBSWY3DPEHPK3PXP"}}}), set(), "m1", "x", "now"))
+    real = identityimport.verify_password
+
+    def meanwhile(password, encoded):
+        # imported again with another password while this one was verified
+        record = store.load("m1")
+        record["people"]["anna"]["hash"] = hash_password("other", iterations=1000)
+        identityimport._write_private(store.path("m1"), record)
+        return real(password, encoded)
+    monkeypatch.setattr(identityimport, "verify_password", meanwhile)
+    assert store.check("m1", "anna", "pw", totp.totp("JBSWY3DPEHPK3PXP")) is False

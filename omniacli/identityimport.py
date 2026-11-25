@@ -39,6 +39,7 @@ from . import handover, passkeys, totp
 from .auth import ITERATIONS, ROLES, UNSET, WORKSPACE_ROLE, hash_password, password_set, verify_password
 from .capabilities import CAPABILITIES
 from .config import _TOKEN_HASH, MEMBER_NAME, USER_NAME, WORKSPACE_NAME
+from .oauth import PREFIX
 
 FORMAT = 1
 # the internal API of the machine (AD-018 §8.7): the central's link only, never a twin in /api/v1 or MCP
@@ -185,13 +186,26 @@ def first_workspace(dry: dict) -> dict[str, str]:
     return found
 
 
-def plan(dry: dict, taken, central_portal: str, workspaces_here=()) -> dict:
+def token_names_map(tokens_ws: dict[str, str], taken) -> dict[str, str]:
+    """{token's name on the machine: its name here}: a name a token of this panel or of another import has already
+    arrives as <name>.<workspace>, then -2 (the people's rule). The token is the same: only its name changes, as the
+    access log and the token page say it."""
+    return names_map(tokens_ws, taken)
+
+
+def plan(dry: dict, taken, central_portal: str, workspaces_here=(), taken_tokens=()) -> dict:
     """The dry run said item by item (AD-018 §18.3.1 step 1, §18.3.3): for each workspace its items with their
-    count, «same», «redo» (who does it again) or «stays», and each person with the name it arrives as. No secret
-    in it: dry is inventory()'s answer."""
+    count, «same», «redo» (who does it again) or «stays», and each person with the name it arrives as. A workspace
+    whose name is taken here (this panel's, or another import's) is blocking: slice 1 only says it, slice 2 must
+    refuse or rename it before it reads the record. No secret in it: dry is inventory()'s answer."""
     rp_here = passkeys.rp_of(_host(central_portal)) if central_portal else None
     host_here = _host(central_portal)
     names = names_map(first_workspace(dry), taken)
+    tokens_ws: dict[str, str] = {}
+    for ws_name, ws_data in sorted((dry.get("workspaces") or {}).items()):
+        for token in ws_data.get("tokens") or []:
+            tokens_ws.setdefault(str(token.get("name") or ""), ws_name)
+    token_names = token_names_map(tokens_ws, taken_tokens)
     machine_host = _host(str(dry.get("portal") or ""))
     out, totals = [], {}
 
@@ -219,6 +233,10 @@ def plan(dry: dict, taken, central_portal: str, workspaces_here=()) -> dict:
                  uri=f"{central_portal}/sso/{name}/callback" if central_portal else "")
             item(rows, "sso_identities", int(sso.get("identities") or 0), SAME)
         item(rows, "tokens", len(data.get("tokens") or []), SAME)
+        moved = {t["name"]: token_names[t["name"]] for t in data.get("tokens") or []
+                 if token_names.get(t["name"], t["name"]) != t["name"]}
+        if moved:
+            item(rows, "renamed_tokens", len(moved), SAME, names=moved)
         grants = data.get("grants") or []
         if grants:
             same = [g for g in grants if host_here and _host(g.get("resource") or "") == host_here]
@@ -233,13 +251,16 @@ def plan(dry: dict, taken, central_portal: str, workspaces_here=()) -> dict:
         if data.get("staff"):
             item(rows, "staff", len(data["staff"]), STAYS)
         out.append({"name": name, "label": data.get("label") or "", "taken_here": name in set(workspaces_here),
+                    "blocking": name in set(workspaces_here),
                     "items": rows,
                     "people": [{**{k: p.get(k) for k in ("name", "role", "custom_role", "totp", "passkeys", "sso",
                                                           "password", "other_workspaces")},
                                 "arrives_as": names.get(p["name"], p["name"])} for p in people]})
     return {"portal": central_portal, "rp": rp_here or "", "machine_portal": dry.get("portal") or "",
             "workspaces": out, "totals": totals,
-            "renamed": {o: n for o, n in sorted(names.items()) if o != n}}
+            "renamed": {o: n for o, n in sorted(names.items()) if o != n},
+            "renamed_tokens": {o: n for o, n in sorted(token_names.items()) if o != n},
+            "blocking": sorted(w["name"] for w in out if w["blocking"])}
 
 
 
@@ -262,6 +283,9 @@ MAX_ITERATIONS = 2 * ITERATIONS
 _PBKDF2 = re.compile(r"pbkdf2_sha256\$(\d{1,8})\$[0-9a-f]{2,128}\$[0-9a-f]{64}")
 _UNSET = re.compile(re.escape(UNSET) + r"\$[0-9a-f]{16,128}")
 _TOKEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@:+-]{0,99}")
+# an OAuth grant as OAuthStore makes it: its id 8 random bytes in hex, its name oauth:<person>:<client>:<id[:4]>
+_GRANT_ID = re.compile(r"[0-9a-f]{16}")
+_GRANT_NAME = re.compile(re.escape(PREFIX) + r"([A-Za-z0-9._@-]{1,64}):([a-z0-9-]{1,20}):([0-9a-f]{4})")
 _KEY = re.compile(r"[\x21-\x7e]{1,512}")
 
 
@@ -383,6 +407,8 @@ def checked(package) -> dict:
     people = _mapping(package.get("people"), "people", MAX_PEOPLE, none=False)
     spaces = _mapping(package.get("workspaces"), "workspaces", MAX_WORKSPACES, none=False)
     members_all: set[str] = set()
+    token_names_seen: set[str] = set()
+    grant_ids: set[str] = set()
     out_spaces = {}
     for ws, data in spaces.items():
         at = f"workspace {ws[:40]!r}"
@@ -426,6 +452,9 @@ def checked(package) -> dict:
                 _refuse(f"{at}.tokens.{name}.hash", "is not a token's hash")
             if token.get("role") not in ROLES:
                 _refuse(f"{at}.tokens.{name}.role", f"is not one of {', '.join(ROLES)}")
+            if name in token_names_seen:
+                _refuse(f"{at}.tokens", f"has {name[:40]!r}, a token of another of its workspaces")
+            token_names_seen.add(name)
             tokens[name] = {"hash": token["hash"], "role": token["role"], "ci": bool(token.get("ci")),
                             "servers": _texts(token.get("servers"), f"{at}.tokens.{name}.servers")}
         token_people = {}
@@ -449,6 +478,16 @@ def checked(package) -> dict:
             person_of(grant.get("user"), f"{at}.grants.{gid[:20]}.user")
             if grant.get("workspace") != ws:
                 _refuse(f"{at}.grants.{gid[:20]}", "is of another workspace")
+            # its id is its key, its name the one OAuthStore gives it (oauth:<person>:<client>:<id[:4]>): the
+            # store finds a token's grant by name, and a name made up here would be another grant's
+            found = _GRANT_NAME.fullmatch(str(grant.get("name") or ""))
+            if not _GRANT_ID.fullmatch(gid) or grant.get("id") != gid:
+                _refuse(f"{at}.grants.{gid[:20]}", "has an id that is not its own")
+            if found is None or found.group(1) != grant["user"] or found.group(3) != gid[:4]:
+                _refuse(f"{at}.grants.{gid[:20]}.name", "is not the name of its person's grant")
+            if gid in grant_ids:
+                _refuse(f"{at}.grants.{gid[:20]}", "came twice")
+            grant_ids.add(gid)
             grants[gid] = grant
         clients = {cid: _json_leaf(_mapping(c, f"{at}.clients", 64, none=False), f"{at}.clients")
                    for cid, c in _mapping(data.get("clients"), f"{at}.clients").items()}
@@ -469,18 +508,33 @@ def checked(package) -> dict:
             "people": out_people, "workspaces": out_spaces}
 
 
-def imported(package: dict, taken, link: str, by: str, now: str) -> dict:
+def imported(package: dict, taken, link: str, by: str, now: str, taken_tokens=(), taken_grants=()) -> dict:
     """The record of a machine's import (the module's docstring): its people under the names they arrive with,
     with the same hashes and secrets, and its workspaces with their members, roles, custom roles, tokens, SSO and
-    grants renamed the same way. A package checked() refuses is refused (IdentityImportError)."""
+    grants renamed the same way. A package checked() refuses is refused (IdentityImportError).
+    taken_tokens: the names of this panel's tokens and of the other imports' (a token of the package with one of
+    them arrives as <name>.<workspace>, its person following it); taken_grants: the ids and names of this panel's
+    OAuth grants and of the other imports' (a grant of the package with one of them refuses the package)."""
     package = checked(package)
     names = names_map(first_workspace(package), taken)
     if set(names) != set(package["people"]):
         raise IdentityImportError("the package of identities is refused: a person without a workspace")
+    token_names = token_names_map({t: ws for ws, data in sorted(package["workspaces"].items())
+                                   for t in data["tokens"]}, taken_tokens)
     people = {names[there]: {"from": there, **data} for there, data in sorted(package["people"].items())}
+    grants_taken = set(taken_grants)
 
     def rn(name):
         return names[name]
+
+    def grant_here(gid: str, grant: dict) -> dict:
+        found = _GRANT_NAME.fullmatch(grant["name"])
+        renamed = f"{PREFIX}{rn(grant['user'])}:{found.group(2)}:{found.group(3)}"
+        for value in (gid, grant["name"], renamed):
+            if value in grants_taken:
+                raise IdentityImportError(f"the package of identities is refused: the grant {value[:60]} is one "
+                                          "of this panel's or of another import's")
+        return {**grant, "user": rn(grant["user"]), "name": renamed}
 
     workspaces = {}
     for name, data in sorted(package["workspaces"].items()):
@@ -492,11 +546,13 @@ def imported(package: dict, taken, link: str, by: str, now: str) -> dict:
             "label": data["label"], "members": {rn(m): r for m, r in data["members"].items()},
             "roles": data["roles"], "member_roles": {rn(m): r for m, r in data["member_roles"].items()},
             "member_servers": {rn(m): v for m, v in data["member_servers"].items()},
-            "token_people": {t: rn(p) for t, p in data["token_people"].items()}, "tokens": data["tokens"],
-            "sso": sso, "grants": {g: {**v, "user": rn(v["user"])} for g, v in data["grants"].items()},
+            "token_people": {token_names[t]: rn(p) for t, p in data["token_people"].items()},
+            "tokens": {token_names[t]: v for t, v in data["tokens"].items()},
+            "sso": sso, "grants": {g: grant_here(g, v) for g, v in data["grants"].items()},
             "clients": data["clients"]}
     return {"format": FORMAT, "link": link, "at": now, "by": by, "portal": package["portal"],
-            "names": {o: n for o, n in sorted(names.items())}, "people": people, "workspaces": workspaces}
+            "names": {o: n for o, n in sorted(names.items())},
+            "token_names": {o: n for o, n in sorted(token_names.items())}, "people": people, "workspaces": workspaces}
 
 
 def summary(record: dict | None) -> dict | None:
@@ -507,6 +563,7 @@ def summary(record: dict | None) -> dict | None:
     people = record.get("people") or {}
     return {"at": record.get("at"), "by": record.get("by") or "",
             "people": len(people), "renamed": {o: n for o, n in (record.get("names") or {}).items() if o != n},
+            "renamed_tokens": {o: n for o, n in (record.get("token_names") or {}).items() if o != n},
             "totp": sum(1 for p in people.values() if p.get("second_factor")),
             "passkeys": sum(len((p.get("passkeys") or {}).get("keys") or []) for p in people.values()),
             "workspaces": {name: {"members": len(w.get("members") or {}), "custom_roles": len(w.get("roles") or {}),
@@ -565,6 +622,22 @@ class Store:
                 found |= set(((self.load(other) or {}).get("people") or {}))
         return found
 
+    def tokens_of_others(self, link: str) -> set[str]:
+        """The names of the tokens other links' imports brought."""
+        return {t for other in self.links() if other != link
+                for w in ((self.load(other) or {}).get("workspaces") or {}).values() for t in (w.get("tokens") or {})}
+
+    def grants_of_others(self, link: str) -> set[str]:
+        """The ids and names of the OAuth grants other links' imports brought."""
+        found: set[str] = set()
+        for other in self.links():
+            if other != link:
+                for w in ((self.load(other) or {}).get("workspaces") or {}).values():
+                    for gid, grant in (w.get("grants") or {}).items():
+                        found |= {gid, str((grant or {}).get("name") or "")}
+        found.discard("")
+        return found
+
     def workspaces_of_others(self, link: str) -> set[str]:
         """The workspaces other links' imports brought: a name of them, like one of this panel's, is taken."""
         found: set[str] = set()
@@ -606,7 +679,10 @@ class Store:
             # read again: a code accepted meanwhile is struck out already
             record = self.load(link)
             person = ((record or {}).get("people") or {}).get(name)
-            factor = person.get("second_factor") if isinstance(person, dict) else None
+            if not isinstance(person, dict) or person.get("hash") != encoded:
+                # imported again meanwhile with another password (or deleted): the one verified is not its any more
+                return False
+            factor = person.get("second_factor")
             if not isinstance(factor, dict) or not isinstance(factor.get("secret"), str) or not factor["secret"]:
                 return False
             last = factor.get("last", -1)

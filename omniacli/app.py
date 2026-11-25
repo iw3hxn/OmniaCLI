@@ -15482,6 +15482,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return None, f"{link.name} did not answer JSON"
         return found, ""
 
+    def identity_tokens_taken(name: str) -> set[str]:
+        """The names a token of the link name's machine may not keep here: this panel's tokens and those of the other
+        links' imports (it arrives as <name>.<workspace>)."""
+        return set(settings.tokens) | identity_store.tokens_of_others(name)
+
     def identity_summary(name: str) -> dict | None:
         """What was imported from the link name, by count; a record this panel cannot read says nothing."""
         try:
@@ -15523,7 +15528,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     # a workspace of this panel, or one another link's import brought, is taken
                     shown = identityimport.plan(dry, identity_store.taken(name, settings.users), portal_url(),
                                                 sorted(set(settings.workspaces)
-                                                       | identity_store.workspaces_of_others(name)))
+                                                       | identity_store.workspaces_of_others(name)),
+                                                identity_tokens_taken(name))
                 except (ValueError, TypeError, AttributeError, KeyError):
                     shown = None
             if shown is None and not error:
@@ -15539,8 +15545,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return 502, {"error": f"The identities of {name} were not read: {error}", "code": "failed"}
             async with identity_lock:
                 try:
-                    record = identityimport.imported(package, identity_store.taken(name, settings.users), name,
-                                                     str(me), datetime.datetime.now().isoformat(timespec="seconds"))
+                    record = identityimport.imported(
+                        package, identity_store.taken(name, settings.users), name, str(me),
+                        datetime.datetime.now().isoformat(timespec="seconds"), identity_tokens_taken(name),
+                        {*oauth_store.grants, *(g.get("name", "") for g in oauth_store.grants.values()),
+                         *identity_store.grants_of_others(name)})
                     # said before it is saved: a record the pages could not read is never kept
                     done = identityimport.summary(record)
                 except (ValueError, TypeError, AttributeError, KeyError) as exc:
