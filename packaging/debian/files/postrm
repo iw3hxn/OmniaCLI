@@ -29,6 +29,28 @@ case "$1" in
             rm -f /etc/systemd/system/omniacli-agent-relay.service
         fi
         rm -rf /etc/omniacli/agent-relay
+        # the units of the helpers (workspacehelper, machinedb, relay), each one's first line «# written by omniacli
+        # workspace-helper»: the firewall of the workspaces, the timer of the Log in as path, the storages' binds,
+        # the workspaces' disks and slices, docker's drop-ins after those disks, the slice and the mounts of the
+        # machine's PostgreSQL. Each disabled and deleted; stopped too, but a storage's bind, a disk and a slice:
+        # stopping them would unmount the disks and kill the containers of the instances, which the purge leaves
+        # running (as their disks and the machine's PostgreSQL), until the machine starts again
+        # (begin of the helpers' units)
+        for unit in /etc/systemd/system/*.service /etc/systemd/system/*.timer /etc/systemd/system/*.mount \
+                /etc/systemd/system/*.slice /etc/systemd/system/docker.service.d/omniacli-*.conf; do
+            [ -f "$unit" ] || continue
+            head -n 1 "$unit" | grep -q '^# written by omniacli workspace-helper' || continue
+            case "$unit" in
+                */docker.service.d/*) ;;
+                */omniacli-storage-*.service|*.mount|*.slice)
+                    systemctl disable "$(basename "$unit")" >/dev/null 2>&1 || true ;;
+                *)
+                    systemctl disable --now "$(basename "$unit")" >/dev/null 2>&1 || true ;;
+            esac
+            rm -f "$unit"
+        done
+        rmdir /etc/systemd/system/docker.service.d 2>/dev/null || true
+        # (end of the helpers' units)
         if id omniacli-tunnel >/dev/null 2>&1; then userdel omniacli-tunnel || true; fi
         rm -f /etc/nginx/conf.d/omniacli-relay-*.conf
         rm -rf /etc/omniacli/certs/relay-*

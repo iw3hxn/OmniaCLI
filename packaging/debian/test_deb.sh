@@ -543,6 +543,8 @@ apt-get purge -y -qq omniacli >/dev/null 2>&1 || fail "purge"
 [ "$(ls -A /var/lib/omniacli)" = backups ] || fail "left after purge besides the backups: $(ls -A /var/lib/omniacli | tr '\n' ' ')"
 [ "$(cat "/var/lib/omniacli/backups/runas/test/$BACKUP")" = dump ] || fail "backup lost by purge"
 [ -d /srv/omniacli/default_workspace ] || fail "the default storage of the workspaces removed by purge"
+LEFT_UNITS="$(grep -rl '^# written by omniacli workspace-helper' /etc/systemd/system 2>/dev/null || true)"
+[ -z "$LEFT_UNITS" ] || fail "units of the helpers left after purge: $LEFT_UNITS"
 echo "ALL CHECKS PASSED"
 EOS
 
