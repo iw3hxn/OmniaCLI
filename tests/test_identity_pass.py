@@ -172,8 +172,18 @@ async def test_a_passkey_only_person_never_activates_a_factor_with_the_password_
     assert resp.status_code == 403 and "link" in resp.text
     assert (await browser.get("/api/servers")).status_code == 401
     assert (await browser.get("/login/setup", follow_redirects=False)).status_code != 200
-    # the link: its page, then the password and a code of the app
+    # a new link replaces the one of before (only for a person of that machine); the status says the links pending
+    # by name, never their tokens
+    made = await home.post("/api/identities/lab4/factor-link", headers=ADMIN, json={"confirm": "lab4", "person": "bruno"})
+    assert made.status_code == 200 and made.json()["made"]["path"].startswith(LINK_PATH)
     person = browser_of(home)
+    assert (await person.get(links["bruno"]["path"])).status_code == 410
+    links["bruno"] = made.json()["made"]
+    nobody = await home.post("/api/identities/lab4/factor-link", headers=ADMIN, json={"confirm": "lab4", "person": "admin"})
+    assert nobody.status_code == 404
+    status = (await home.get("/api/identities/lab4", headers=ADMIN)).json()
+    assert list(status["home"]["pass"]["links"]) == ["bruno"] and links["bruno"]["path"] not in json.dumps(status)
+    # the link: its page, then the password and a code of the app
     page = await person.get(links["bruno"]["path"])
     assert page.status_code == 200 and page.headers["cache-control"] == "no-store"
     secret = re.search(r'id="secret">([A-Z2-7]+)<', page.text).group(1)
@@ -191,14 +201,9 @@ async def test_a_passkey_only_person_never_activates_a_factor_with_the_password_
     later = totp.totp(secret, datetime.datetime.now().timestamp() + 30)
     assert (await browser.post("/login/code", data={"code": later}, headers={"Origin": ORIGIN})).status_code == 303
     assert (await browser.get("/api/servers")).status_code == 200
-    # a new link replaces the one of before; only for a person of that machine
-    made = await home.post("/api/identities/lab4/factor-link", headers=ADMIN, json={"confirm": "lab4", "person": "bruno"})
-    assert made.status_code == 200 and made.json()["made"]["path"].startswith(LINK_PATH)
-    nobody = await home.post("/api/identities/lab4/factor-link", headers=ADMIN, json={"confirm": "lab4", "person": "admin"})
-    assert nobody.status_code == 404
-    # the status says the links pending by name, never their tokens
-    status = (await home.get("/api/identities/lab4", headers=ADMIN)).json()
-    assert list(status["home"]["pass"]["links"]) == ["bruno"] and made.json()["made"]["path"] not in json.dumps(status)
+    # his second step set up: no more link for him
+    again = await home.post("/api/identities/lab4/factor-link", headers=ADMIN, json={"confirm": "lab4", "person": "bruno"})
+    assert again.status_code == 409
 
 
 # --- the return --------------------------------------------------------------------------------------------------
@@ -236,7 +241,7 @@ async def test_the_return_carries_that_workspaces_people_only_and_comes_from_the
     from .test_remote_home import CENTRAL_LINK_TOKEN
     link = {"Authorization": f"Bearer {CENTRAL_LINK_TOKEN}"}
     staff = await home.on_machine.post("/api/identity/v1/pass", headers=link, json={
-        "op": "return", "workspaces": ["acme", "beta"],
+        "op": "return", "workspaces": ["acme", "beta"], "passed": central_home(home)["acme"]["pass"]["passed"],
         "people": {"staff": {"hash": home.machine_app.state.settings.users["elena"]}}})
     assert staff.status_code == 400 and "staff" in staff.text
     # the machine's admin is no link: it never brings the people back by itself

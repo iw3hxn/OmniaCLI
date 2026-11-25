@@ -1585,6 +1585,13 @@ only, each step in both access logs) makes this panel their only place
    sets up the code of an app and reads its recovery codes; its login here
    says so until then. **New link of a second step…** (REST `…/factor-link`,
    MCP `identity_factor_link`) makes another one, ending the one of before.
+   A link is made and used only while the person has no second step that
+   works on the portal: it never replaces an app or a passkey.
+
+The steps of a pass, its return and the one-time links of a machine run one
+at a time on this panel, and on the machine every step and the deletion of
+the 7 days run one at a time too. A pass that fails half way takes back its
+freeze only (the machine keeps serving the workspaces as before).
 
 **Back to the machine…** (REST `…/identities/return`, MCP `identity_return`),
 within the 7 days, is asked here by an admin, never by the machine: this
@@ -1592,13 +1599,17 @@ panel sends the people of that machine who changed here since the pass
 (their hashes, apps and passkeys), of its workspaces only; the machine takes
 nobody else (a name not among the people it kept at the pass refuses the
 whole return), switches their login on again and is no more served by this
-panel, and its people's sessions here end. After the 7 days the machine
-refuses it: their secrets are gone there, and the way back is a handover.
+panel, and its people's sessions here end. It names the pass it undoes (the
+machine's moment of it): a machine never takes back a pass this panel did
+not record. After the 7 days both sides refuse it: their secrets are gone
+there, and the way back is a handover.
 
 The access log of a served workspace, as its admin reads it here, joins both
-sides in order of time: the machine's entries and this panel's (logins,
-second steps, account changes, requests asked of the machine), each as its own
-log wrote it, without the names of the provider's machines.
+sides in order of time: the machine's entries and this panel's asked through
+that machine's link since this panel serves it (logins, second steps, account
+changes, requests asked of the machine, the pass and the return), each as its
+own log wrote it, without the names of the provider's machines. The single
+sign-on of a workspace frozen or passed makes no user on the machine.
 
 #### The two names of the central panel
 

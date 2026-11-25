@@ -819,6 +819,27 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
      - Il nome del portale di una macchina servito dal centrale per 90 giorni (18.4.5): oggi le passkey di quel nome
        si rifanno con il link.
      - Il webhook di un'istanza senza nome pubblico di un W passato dipende dal centrale (come nella fetta 4).
+   - **La revisione (dopo `fb3867d`).** Sei correzioni:
+     1. Passaggio, ritorno e link di un collegamento uno alla volta sul centrale (un lock per collegamento), e sulla
+        macchina ogni passo e la cancellazione dei 7 giorni sotto un solo lock. La macchina congela solo un W senza
+        passaggio in corso. Prima un secondo «Passale» contemporaneo riceveva 409 e il suo annullamento (un `return`
+        senza persone) disfaceva il passaggio riuscito: il centrale si credeva passato, la macchina riaccendeva il
+        login e toglieva il record di casa.
+     2. Un passaggio fallito a metà si annulla con `op: thaw`, che toglie solo lo stato `pass` e solo se `frozen`:
+        il record di casa della fetta 2 resta. Prima un export fallito toglieva tutto il record, e il centrale
+        mostrava «servito» mentre la macchina rifiutava l'ambito.
+     3. Il `return` vale solo per un W `passed`, solo per il passaggio che il centrale ha registrato (il momento
+        della macchina, `machine_passed`, va e torna) e solo entro i 7 giorni, sui due lati (prima la macchina
+        guardava solo `purged`). La cancellazione rilegge lo stato sotto il lock: un W tornato non si cancella, e il
+        segno `purged` si scrive solo su un record di casa che ha ancora il suo collegamento.
+     4. Un link monouso si fa e si usa solo per chi ne ha bisogno adesso (`needs_link`, riletto anche sotto il lock
+        dell'import): prima un admin poteva sostituire con link e password l'app di una persona.
+     5. Il registro unito prende del centrale solo le voci chieste attraverso questo collegamento (`via`) da quando
+        il centrale serve la macchina, e toglie i nomi di tutti i collegamenti: prima un W con lo stesso nome di un
+        altro cliente mostrava le sue voci (persone, indirizzi).
+     6. Lo SSO di un W congelato o passato non crea più utenti né membri: rifiutato prima di `sso_person`.
+
+     Prova: `tests/test_identity_pass_review.py`, 9 test, tutti falliscono su `fb3867d`.
 6. **Consegna e spostamento con l'identità centrale** (18.7).
    - *Prova*: con il NAT simulato di AD-008 §9 passo 7, una consegna da lab4 il cui codice punta a un nome del
      workspace. Il congelamento a `ready`. Le persone importate con hash e TOTP dalla macchina che riceve. Al commit

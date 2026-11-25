@@ -2657,6 +2657,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except sso.SsoError as exc:
             return refused(str(exc), "Your e-mail address is not one this workspace lets in with this provider.", 403,
                            str(claims.get("email") or "")[:64])
+        if frozen_of(workspace):
+            # its workspace passes to the central panel (AD-018 slice 5): no user made, no login here
+            return refused("its workspace passes to the central panel", frozen_of(workspace) + ".", 403, email)
         name, made, problem = await sso_person(workspace, provider, claims, email)
         if problem:
             return refused(problem, "Your user cannot log in with this provider: ask the administrator of the "
@@ -11918,12 +11921,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return factor_page(request, "pending", name, "Wrong password or code." if not right else
                                "Wrong code: type the one the app shows now (check the clock of the phone)", 401,
                                secret=setup[0], expires=found["expires"])
+        rp, required = passkey_domain_here(), portal_asks_second()
+        if not identitypass.needs_link(record, rp, required):
+            # its second step was set up meanwhile: the link never replaces it
+            access_log.record("failed", "user", name, ip, "a one-time link of a second step: it has one already",
+                              via=person.link)
+            return factor_page(request, "invalid", code=410)
         if not factor_links.use(token):
             return factor_page(request, "invalid", code=410)
         factor_setups.pop(key, None)
+
+        def enable(p: dict):
+            # again under the lock of the import: a second step made meanwhile stays
+            return identitypass.totp_enable(p, setup[0], used) if identitypass.needs_link(p, rp, required) else None
         async with identity_lock:
-            codes = await asyncio.to_thread(identity_store.mutate, person.link, name,
-                                            lambda p: identitypass.totp_enable(p, setup[0], used))
+            codes = await asyncio.to_thread(identity_store.mutate, person.link, name, enable)
+        if codes is None:
+            return factor_page(request, "invalid", code=410)
         limiter.succeeded(ip, name)
         access_log.record("second-factor", "user", name, ip, "switched on with its one-time link (AD-018 slice 5)",
                           role=WORKSPACE_ROLE, via=person.link, workspaces=[w for w, _ in person.workspaces])
@@ -13396,8 +13410,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         the same way, in order of time, each log as it was written (neither side rewrites the other's). The names of
         the provider's machines taken out of this panel's lines (AD-018 vincolo 8.10)."""
         given = {k: str(request.query_params.get(k) or "") for k in ("since", "until", "who", "event", "q")}
-        ours = audit_entries(given["since"], given["until"], given["who"], given["event"], given["q"], workspace)
-        names, lang = placed_names_of(link), request_language(request)
+        since = str((workspace_homes.all().get(link.name) or {}).get("at") or "")
+        # this panel's entries of this machine's workspace only: asked through its link (a workspace of the same
+        # name served for another machine before, or one of this panel's, is another customer's), since this panel
+        # serves it
+        ours = [e for e in audit_entries(given["since"], given["until"], given["who"], given["event"], given["q"],
+                                         workspace)
+                if e.get("via") == link.name and since and str(e.get("time") or "") >= since]
+        names = sorted({n for target in settings.link_targets.values() for n in placed_names_of(target)})
+        lang = request_language(request)
         here = [{k: v for k, v in e.items() if k not in ("via", "prev", "hash")}
                 | {"detail": placed_text(str(e.get("detail") or ""), names, lang, me), "side": "central"} for e in ours]
         theirs = [e for e in context.get("entries") or [] if isinstance(e, dict)]
@@ -17258,19 +17279,28 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         """A workspace's pass as the central panel reads it (GET /api/identity/v1/home): no secret, no snapshot."""
         return {k: found.get(k) for k in ("state", "at", "until", "purged", "portal") if found.get(k) is not None}
 
+    # every step of a pass, its return and the purge after the 7 days, one at a time (each reads the state it changes
+    # under it: a freeze, a thaw, a return or a purge never meets another half done)
+    pass_lock = asyncio.Lock()
+
     @app.post(identityimport.API + "/pass")
     async def identity_pass(request: Request, payload: dict = Body(...), me: Principal = Depends(current_user)):
         """The pass of workspaces of this machine to the central panel of this link (AD-018 slice 5,
-        identitypass.py), op: freeze (their identity changes refused here), pass (what this machine keeps of their
-        people, never a secret, and their login here off; their secrets deleted after PASS_DAYS) or return (the
-        people the central panel sends back, of those workspaces only, taken; their login here on again; the
-        workspaces no more served). The central panel's admin link only, of workspaces whose home it is; each step
-        in the access log."""
+        identitypass.py), op: freeze (their identity changes refused here; only from no pass), thaw (a freeze taken
+        back: the pass's state goes, the home record stays; only while frozen), pass (what this machine keeps of
+        their people, never a secret, and their login here off; their secrets deleted after PASS_DAYS) or return
+        (only of a pass this link made, named by its moment, within the 7 days: the people the central panel sends
+        back, of those workspaces only, taken; their login here on again; the workspaces no more served). The central
+        panel's admin link only, of workspaces whose home it is; each step in the access log."""
         identity_link_only(me)
+        async with pass_lock:
+            return await identity_pass_step(request, payload, me)
+
+    async def identity_pass_step(request: Request, payload: dict, me: Principal):
         op = str(payload.get("op") or "")
         wanted = payload.get("workspaces")
-        if op not in ("freeze", "pass", "return"):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "op: freeze, pass or return")
+        if op not in ("freeze", "thaw", "pass", "return"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "op: freeze, thaw, pass or return")
         if not isinstance(wanted, list) or not wanted or len(wanted) > 1000 or not all(
                 isinstance(w, str) for w in wanted):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "workspaces: a list of the names of workspaces")
@@ -17306,6 +17336,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                                               "that do not pass: they pass together or not at all")
             if any(pass_of(w).get("state") == identitypass.PASSED for w in wanted):
                 raise HTTPException(status.HTTP_409_CONFLICT, "These workspaces passed already")
+            if any(pass_of(w).get("state") for w in wanted):
+                # a second freeze while one is under way: the pass of another request, never taken over
+                raise HTTPException(status.HTTP_409_CONFLICT, "These workspaces are passing already")
             for ws in wanted:
                 entry = central_homes.all()[ws]
                 central_homes.put(ws, {**entry, identitypass.PASS_KEY: {"state": identitypass.FROZEN, "at": stamp,
@@ -17313,6 +17346,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             said(f"the identities of {', '.join(wanted)} frozen: they pass to {identitypass.portal_said(portal)} "
                  "(AD-018 slice 5)")
             return {"workspaces": wanted, "state": identitypass.FROZEN}
+        if op == "thaw":
+            # a pass that did not end (its import failed, its workspaces changed): the freeze taken back, the home
+            # record of slice 2 kept as it was; never a pass that ended (that is the return)
+            if any(pass_of(w).get("state") != identitypass.FROZEN for w in wanted):
+                raise HTTPException(status.HTTP_409_CONFLICT, "Only a freeze is taken back: these workspaces are not "
+                                                              "frozen")
+            for ws in wanted:
+                entry = central_homes.all()[ws]
+                central_homes.put(ws, {k: v for k, v in entry.items() if k != identitypass.PASS_KEY})
+            said(f"the freeze of the identities of {', '.join(wanted)} taken back: they did not pass (AD-018 slice 5)")
+            return {"workspaces": wanted, "state": ""}
         if op == "pass":
             if any(pass_of(w).get("state") != identitypass.FROZEN for w in wanted):
                 raise HTTPException(status.HTTP_409_CONFLICT, "Freeze these workspaces first")
@@ -17336,12 +17380,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 sessions.drop_user(person)
             said(f"the people of {', '.join(wanted)} passed to {identitypass.portal_said(pass_of(wanted[0]).get('portal') or '')}: "
                  f"their login here is off, their secrets here deleted on {end} (AD-018 slice 5)")
-            return {"workspaces": wanted, "state": identitypass.PASSED, "until": end, "people": len(gone)}
-        # return: the people back, as the central panel kept them (only those of these workspaces)
+            return {"workspaces": wanted, "state": identitypass.PASSED, "until": end, "people": len(gone),
+                    "passed": stamp}
+        # return: the people back, as the central panel kept them (only those of these workspaces), of the pass the
+        # central panel recorded (its moment), never of one it did not
         found = {w: pass_of(w) for w in wanted}
-        if any(not f.get("state") for f in found.values()):
+        if any(f.get("state") != identitypass.PASSED for f in found.values()):
             raise HTTPException(status.HTTP_409_CONFLICT, "These workspaces did not pass")
-        if any(f.get("purged") for f in found.values()):
+        given = payload.get("passed")
+        if not isinstance(given, str) or any(f.get("passed") != given for f in found.values()):
+            raise HTTPException(status.HTTP_409_CONFLICT, "This is not the pass of these workspaces")
+        if any(f.get("purged") or identitypass.expired(f) for f in found.values()):
             raise HTTPException(status.HTTP_409_CONFLICT, "The secrets of these people were deleted here after the "
                                                           "7 days: they come back with a handover")
         allowed = set()
@@ -17382,11 +17431,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         and sessions, the workspace's single sign-on with its client secret, its tokens, its grants and its
         invitations; their names leave its members. What this machine keeps of them (the pass's snapshot, no
         secret) stays: the central panel's scope is checked against it."""
-        due = sorted(w for w, p in passes().items() if p.get("state") == identitypass.PASSED and not p.get("purged")
-                     and identitypass.expired(p, now) and w in settings.workspaces)
         lines = []
-        for ws in due:
-            lines += await purge_one(ws)
+        async with pass_lock:
+            # read under the lock: a return meanwhile took the workspace back
+            due = sorted(w for w, p in passes().items() if p.get("state") == identitypass.PASSED
+                         and not p.get("purged") and identitypass.expired(p, now) and w in settings.workspaces)
+            for ws in due:
+                lines += await purge_one(ws)
         return lines
 
     async def purge_one(ws: str) -> list[str]:
@@ -17432,9 +17483,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         await asyncio.to_thread(sso_store.remove, ws)
         for grant in grants:
             oauth_store.revoke(str(grant.get("id")), "its workspace passed to the central panel")
-        entry = central_homes.all().get(ws) or {}
+        entry = central_homes.all().get(ws)
         stamp = (datetime.datetime.now()).isoformat(timespec="seconds")
-        central_homes.put(ws, {**entry, identitypass.PASS_KEY: {**found, "purged": stamp}})
+        if entry is not None and entry.get("link"):
+            # the mark on the record of the workspace's home only: never a stray entry without its link
+            central_homes.put(ws, {**entry, identitypass.PASS_KEY: {**found, "purged": stamp}})
         lines.append(f"{ws}: the 7 days of its pass are over, the secrets of its people deleted here: {len(users)} "
                      f"passwords' hashes, {apps} authenticator apps, {keys} passkeys, {len(tokens)} tokens, "
                      f"{len(grants)} grants, {len(dropped)} invitations"
@@ -17805,7 +17858,19 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"person": person, "path": path, "url": (portal_url() + path) if portal_url() else "",
                 "expires": datetime.datetime.fromtimestamp(end).isoformat(timespec="seconds")}
 
+    # the pass, the return and the one-time links of a link, one at a time: a second pass never meets the first one
+    # half done (its thaw would take back a pass that ended)
+    pass_locks: dict[str, asyncio.Lock] = {}
+
     async def pass_act(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
+        async with pass_locks.setdefault(name, asyncio.Lock()):
+            return await pass_act_locked(name, link, me, ip)
+
+    async def return_act(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
+        async with pass_locks.setdefault(name, asyncio.Lock()):
+            return await return_act_locked(name, link, me, ip)
+
+    async def pass_act_locked(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
         """The pass of the machine of name (AD-018 §18.3.1 steps 2-6): its workspaces served here frozen there,
         imported again, passed (its people's login off there, their secrets deleted there after 7 days); from now
         their identities live here. The people whose second step did not pass get a one-time link each, shown once."""
@@ -17824,7 +17889,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return code, {"error": f"The workspaces of {name} did not pass: {why}", "code": apiv1.code_of(code)}
 
         async def thaw() -> None:
-            code, _, why = await pass_call(link, me, {"op": "return", "workspaces": spaces, "people": {}})
+            code, _, why = await pass_call(link, me, {"op": "thaw", "workspaces": spaces})
             if code != 200:
                 _logger.warning("the freeze of %s not taken back: %s", name, why)
 
@@ -17845,7 +17910,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return failed(why, 409 if code == 409 else 502)
         info = {"at": datetime.datetime.now().isoformat(timespec="seconds"),
                 "until": str(said.get("until") or identitypass.until()), "by": str(me), "revision": 1,
-                "workspaces": spaces, "portal": portal}
+                "workspaces": spaces, "portal": portal,
+                # the machine's moment of this pass: the return names it (never another pass)
+                "machine_passed": str(said.get("passed") or "")}
         async with identity_lock:
             await asyncio.to_thread(identity_store.set_passed, name, info)
         rp, required = passkey_domain_here(), portal_asks_second()
@@ -17858,10 +17925,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                            f"people log in here only, their identities live here; their secrets are deleted on the "
                            f"machine on {info['until']}; {len(links)} one-time links of a second step to set up "
                            f"again" + (f" ({', '.join(x['person'] for x in links)})" if links else ""))[:300],
-                          workspaces=spaces)
+                          workspaces=spaces, via=name)
         return 200, {"ok": True, "link": name, "home": home_said(name), "links": links}
 
-    async def return_act(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
+    async def return_act_locked(name: str, link: LinkTarget, me: Principal, ip: str) -> tuple[int, dict]:
         """«Back to the machine» (AD-018 §18.3.2): the people of the machine of name who changed here since the pass
         (their hashes, apps and passkeys), of its workspaces only, sent to it; their login there is on again and
         this panel serves them no more. Asked here by an admin, never by the machine. After the 7 days the machine
@@ -17869,12 +17936,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         passed = identity_store.passed(name)
         if passed is None:
             return 409, {"error": f"The workspaces of {name} did not pass", "code": "conflict"}
+        if identitypass.expired(passed):
+            return 409, {"error": f"The 7 days of the pass of {name} are over: its people come back with a handover",
+                         "code": "conflict"}
         record = identity_store.load(name) or {}
         back = {str(p.get("from") or n): {"hash": p["hash"], "second_factor": p.get("second_factor"),
                                           "passkeys": p.get("passkeys")}
                 for n, p in sorted((record.get("people") or {}).items()) if isinstance(p, dict) and p.get("changed")}
         spaces = list(passed.get("workspaces") or [])
-        code, said, why = await pass_call(link, me, {"op": "return", "workspaces": spaces, "people": back})
+        code, said, why = await pass_call(link, me, {"op": "return", "workspaces": spaces, "people": back,
+                                                     "passed": str(passed.get("machine_passed") or "")})
         if code != 200:
             access_log.record("action", me.kind, me.name, ip, f"the return of {name} refused: {why}"[:300],
                               status="failed")
@@ -17894,7 +17965,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                           (f"the workspaces {', '.join(spaces)} of {name} back on their machine (AD-018 slice 5): "
                            f"{len(back)} people changed here sent back ({', '.join(sorted(back)) or 'none'}); this "
                            f"panel serves them no more" + (f"; {dropped} one-time links ended" if dropped else ""))[:300],
-                          workspaces=spaces)
+                          workspaces=spaces, via=name)
         return 200, {"ok": True, "link": name, "returned": [str(x) for x in said.get("returned") or []][:5000],
                      "home": home_said(name),
                      **({"hooks_job": str(said["hooks_job"])[:64]} if said.get("hooks_job") else {})}
@@ -17907,6 +17978,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         found = serving().people.get(person)
         if found is None or found.link != name:
             return 404, {"error": f"{person[:64]} is no person of {name} served here", "code": "not_found"}
+        if not identitypass.needs_link(passed_person(found) or {}, passkey_domain_here(), portal_asks_second()):
+            # a link sets up a second step only where there is none: it never replaces one with link and password
+            return 409, {"error": f"{person[:64]} has a second step already: an admin never replaces it with a link",
+                         "code": "conflict"}
         made = factor_link_of(name, person, me)
         access_log.record("action", me.kind, me.name, ip, f"a one-time link of a second step made for {person} "
                           f"(AD-018 slice 5), valid until {made['expires']}", workspaces=[w for w, _ in found.workspaces])
