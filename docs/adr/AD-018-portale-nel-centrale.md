@@ -414,10 +414,23 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
    - **Scostamenti.** (1) Il pacchetto è JSON sul collegamento (che è SSH), non sigillato come quello della consegna:
      il collegamento è già cifrato e autenticato, e la macchina non ha una chiave del centrale. (2) Gli inviti in
      attesa si contano e non si importano (18.3.3 dice che si rifanno). (3) L'import vive in un file per collegamento,
-     non ancora in W del centrale: i W remoti sono la fetta 2. (4) Il nome di un grant OAuth (`oauth:<persona>:…`)
-     resta quello della macchina anche se la persona è rinominata; il campo `user` cambia.
-   - **Resta aperto.** Due macchine con un W dello stesso nome: la pagina lo segnala, la regola la decide la fetta 2.
-     Il nome del portale del centrale come RP ID è la fetta 3: oggi il confronto usa il nome esatto del portale.
+     non ancora in W del centrale: i W remoti sono la fetta 2.
+   - **Token e grant con un nome già preso** (la seconda revisione). Un token del pacchetto con il nome di un token
+     del centrale o di un altro import arriva come `<nome>.<workspace>` (poi `-2`), con la sua persona in
+     `token_people`: è lo stesso token, cambia solo il nome che registro e pagine dicono; la prova a vuoto lo elenca
+     («Nomi di token già presi qui»). Un grant OAuth ha l'id della sua chiave (16 esadecimali) e il nome che gli dà
+     `OAuthStore`, `oauth:<la sua persona>:<client>:<id[:4]>`, riscritto con la persona rinominata; un id o un nome
+     (di prima o di dopo) che il centrale o un altro import ha già rifiuta il pacchetto: `OAuthStore` trova il grant di
+     un token per nome. Un nome di token ripetuto in due W dello stesso pacchetto lo rifiuta.
+   - **Un W con il nome di uno del centrale o di un altro import** (la seconda revisione): la fetta 1 lo segnala
+     soltanto, come bloccante (`plan()["blocking"]`, la riga sulla pagina), e l'import si tiene. **La fetta 2 deve
+     rifiutare o rinominare un tale W prima di leggere il record**: membri, ruoli, token, SSO e grant sono legati al W
+     per nome, e leggerli sotto il W del centrale darebbe a persone e token della macchina l'ambito di un altro
+     cliente.
+   - **Resta aperto.** La regola per due W con lo stesso nome (rifiutare o rinominare) la decide la fetta 2, con il
+     vincolo qui sopra. Il nome del portale del centrale come RP ID è la fetta 3: oggi il confronto usa il nome esatto
+     del portale. `Store.check` riconfronta sotto il lock l'hash riletto con quello verificato: un import rifatto nel
+     frattempo con un'altra password dà `False`.
 2. **Il centrale casa** (18.2): W remoti, ambito su ogni route, REST/MCP inoltrati, liste, spostati diretti all'host.
    - *Prova*: la parità del vincolo 3, con 0 differenze. Il token di W su lab3 chiama `/api/v1` di un server su lab4. La
      voce `on_behalf` è nel registro di lab4.

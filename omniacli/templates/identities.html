@@ -54,12 +54,14 @@
                    "roles": _("Roles"), "custom_roles": _("Custom roles"),
                    "totp": _("Authenticator apps and recovery codes"), "passkeys": _("Passkeys"),
                    "sso": _("Single sign-on"), "sso_identities": _("Identities linked by single sign-on"),
-                   "tokens": _("REST and MCP tokens"), "grants": _("Connectors of AI assistants (OAuth)"),
+                   "tokens": _("REST and MCP tokens"), "renamed_tokens": _("Token names already taken here"),
+                   "grants": _("Connectors of AI assistants (OAuth)"),
                    "invitations": _("Invitations not accepted yet"), "webhooks": _("GitHub webhooks on the portal's address"),
                    "staff": _("The machine's own people")} %}
   {% for ws in plan.workspaces %}
   <h3>{{ _("Workspace {name}", name=ws.name) }}{% if ws.label and ws.label != ws.name %} · {{ ws.label }}{% endif %}</h3>
-  {% if ws.taken_here %}<p class="warn-line">{{ _("A workspace of this name is on this panel already.") }}</p>{% endif %}
+  {% if ws.blocking %}<p class="warn-line" data-blocking="{{ ws.name }}">{{ _("A workspace of this name is on this panel already.") }}
+    {{ _("Its import is kept, but the machine cannot pass to this panel until this workspace is renamed: its people and tokens would join the other one.") }}</p>{% endif %}
   <div class="scroll">
   <table data-workspace="{{ ws.name }}">
     <thead><tr><th scope="col">{{ _("Item") }}</th><th scope="col" class="idn-count">{{ _("How many") }}</th><th scope="col">{{ _("What happens") }}</th></tr></thead>
@@ -69,7 +71,8 @@
       <td>{{ labels[row.item] }}{% if row.rp %} · <span class="mono">{{ row.rp }}</span>{% endif %}</td>
       <td class="idn-count">{{ row.count }}</td>
       <td class="idn-verdict {{ row.verdict }}">
-        {% if row.verdict == "same" %}{{ _("Passes the same") }}
+        {% if row.item == "renamed_tokens" %}{{ _("The same tokens, under a new name:") }} {% for old, new in row.names.items() %}<span class="mono">{{ old }}</span> → <span class="mono">{{ new }}</span>{{ ", " if not loop.last }}{% endfor %}
+        {% elif row.verdict == "same" %}{{ _("Passes the same") }}
         {% elif row.verdict == "stays" %}{{ _("Stays on the machine") }}
         {% elif row.item == "renamed" %}{{ _("Each logs in with the new name below, the same password") }}
         {% elif row.who == "provider_admin" %}{% if row.uri %}{{ _("The admin of the customer's provider adds the return address {uri}", uri=row.uri) }}{% else %}{{ _("The admin of the customer's provider adds the return address of the portal, once this panel has one") }}{% endif %}

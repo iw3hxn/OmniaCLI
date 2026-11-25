@@ -1445,8 +1445,14 @@ panel does not log them in yet. **Links › Identità** on a link's row
    `identity-imports/<link>.json` (600, in a 700 folder) beside the other data
    of this panel, in its nightly backup, in the purge. Again replaces the import
    of before. Only the people of role `workspace` and the tokens of a workspace
-   pass; the machine's own people, its tokens and its links never. A workspace
-   another machine's import brought is pointed out as one of this panel's is.
+   pass; the machine's own people, its tokens and its links never. A token
+   named like one of this panel's (or of another import's) arrives as
+   `<name>.<workspace>`, the same token under a new name; an OAuth grant keeps
+   its id and the name OAuthStore gives it (`oauth:<person>:<client>:<id>`,
+   with the person's new name), and one whose id or name is here already
+   refuses the package. A workspace named like one of this panel's, or one
+   another machine's import brought, is pointed out as blocking: its import is
+   kept, and the machine does not pass to this panel until it is renamed.
 3. **Delete the import…** is the undo: the file goes, the machine is not
    touched.
 
