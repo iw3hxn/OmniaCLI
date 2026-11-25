@@ -13,9 +13,11 @@ On the central panel:
 - plan(): the dry run said item by item, «passes the same» or «to be done again, by whom», and the names a person
   of the machine would arrive with (a name the central has already arrives as <name>.<workspace>, then -2, -3:
   Carlo, 24/11/2026, the rule of the handover);
+- checked(): what a package may hold (a machine is not trusted with what it writes here): its people exactly the
+  members of its workspaces, every reference to a person one of them, every value of its type and size;
 - imported(): the record the central keeps of a machine's import, with the same hashes and secrets;
-- Store: one file per link in FOLDER (700, each file 600), the package staged beside it (600) only while it is
-  imported, and deleted after. Deleting a link's file is the undo: nothing was written on the machine.
+- Store: one file per link in FOLDER (700, each file 600); the package is read into memory (MAX_PACKAGE at most) and
+  never written. Deleting a link's file is the undo: nothing was written on the machine.
 
 Who imported is in the record and in the access log of both sides. Nothing here changes the machine: no freeze, no
 home switched (slice 5)."""
@@ -23,6 +25,7 @@ home switched (slice 5)."""
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import os
 import re
@@ -33,15 +36,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import handover, passkeys, totp
-from .auth import WORKSPACE_ROLE, password_set, verify_password
+from .auth import ITERATIONS, ROLES, UNSET, WORKSPACE_ROLE, hash_password, password_set, verify_password
+from .capabilities import CAPABILITIES
+from .config import _TOKEN_HASH, MEMBER_NAME, USER_NAME, WORKSPACE_NAME
 
 FORMAT = 1
 # the internal API of the machine (AD-018 §8.7): the central's link only, never a twin in /api/v1 or MCP
 API = "/api/identity/v1"
 # on the central: a file per link, the identities imported from that machine
 FOLDER = "identity-imports"
-# the package while it is imported, beside the folder (never inside it: a backup of the folder never holds it)
-STAGED = ".identity-package-"
 _LINK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+=-]{0,63}")
 
 # the verdict of an item of the dry run (AD-018 §18.3.3): the page and the REST API say it in words
@@ -239,51 +242,260 @@ def plan(dry: dict, taken, central_portal: str, workspaces_here=()) -> dict:
             "renamed": {o: n for o, n in sorted(names.items()) if o != n}}
 
 
-def _check_package(package) -> None:
+
+# --- what a package may hold: a machine is not trusted with what it writes here (AD-009's rule, «chi riceve non si
+# fida del contenuto»). Every person is a member of one of its workspaces, every reference to a person is one of
+# them, every name is one this panel takes, every value of the type and size it should be.
+
+MAX_PACKAGE = 64 << 20  # bytes of the package read through the link, at most
+MAX_INVENTORY = 16 << 20  # bytes of the dry run
+# the whole answer of the machine, read within this (a page's time, AD-018 §8.9), whatever it drips
+TIMEOUT = 60.0
+MAX_PEOPLE = 5000
+MAX_WORKSPACES = 1000
+MAX_ITEMS = 1000  # tokens, grants, clients, identities, custom roles, passkeys of one workspace or person
+MAX_TEXT = 4096
+# a password's hash this panel verifies: PBKDF2-SHA256 with the iterations of a panel (the tests' 1000 to twice the
+# default), or the mark of a person with no password yet
+MIN_ITERATIONS = 1000
+MAX_ITERATIONS = 2 * ITERATIONS
+_PBKDF2 = re.compile(r"pbkdf2_sha256\$(\d{1,8})\$[0-9a-f]{2,128}\$[0-9a-f]{64}")
+_UNSET = re.compile(re.escape(UNSET) + r"\$[0-9a-f]{16,128}")
+_TOKEN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@:+-]{0,99}")
+_KEY = re.compile(r"[\x21-\x7e]{1,512}")
+
+
+@functools.lru_cache(maxsize=1)
+def _dummy() -> str:
+    """A hash a check of an unknown name pays (Authenticator does the same): who was imported is not told by time.
+    Made at the first check, not when the module is imported."""
+    return hash_password(secrets.token_hex(8))
+
+
+def _refuse(where: str, what: str):
+    raise IdentityImportError(f"the package of identities is refused: {where} {what}")
+
+
+def _text(value, where: str, limit: int = MAX_TEXT, empty: bool = True) -> str:
+    if not isinstance(value, str) or len(value) > limit or (not empty and not value):
+        _refuse(where, "is not a text of its size")
+    return value
+
+
+def _mapping(value, where: str, limit: int = MAX_ITEMS, none: bool = True) -> dict:
+    if value is None and none:
+        return {}
+    if not isinstance(value, dict) or len(value) > limit or any(not isinstance(k, str) or len(k) > 512 for k in value):
+        _refuse(where, "is not a mapping of its size")
+    return value
+
+
+def _number(value, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _refuse(where, "is not a number")
+    return value
+
+
+def _texts(value, where: str, limit: int = MAX_ITEMS) -> list:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > limit:
+        _refuse(where, "is not a list of its size")
+    return [_text(v, f"{where}[]", 512) for v in value]
+
+
+def _password_hash(value, where: str) -> str:
+    found = _PBKDF2.fullmatch(value) if isinstance(value, str) else None
+    if found is not None and MIN_ITERATIONS <= int(found.group(1)) <= MAX_ITERATIONS:
+        return value
+    if isinstance(value, str) and _UNSET.fullmatch(value):
+        return value
+    _refuse(where, f"is not a password's hash this panel verifies (PBKDF2-SHA256, {MIN_ITERATIONS} to "
+                   f"{MAX_ITERATIONS} iterations)")
+
+
+def _second_factor(value, where: str) -> dict | None:
+    if value is None:
+        return None
+    _mapping(value, where, 16, none=False)
+    secret = _text(value.get("secret"), f"{where}.secret", 128, empty=False)
+    try:
+        totp.totp(secret, 0)
+    except (ValueError, TypeError):
+        _refuse(f"{where}.secret", "is not a TOTP secret")
+    last = value.get("last", -1)
+    if isinstance(last, bool) or not isinstance(last, int):
+        _refuse(f"{where}.last", "is not a step")
+    return {"secret": secret, "since": _number(value.get("since", 0), f"{where}.since"), "last": last,
+            "salt": _text(value.get("salt", ""), f"{where}.salt", 128),
+            "recovery": _texts(value.get("recovery"), f"{where}.recovery", 64)}
+
+
+def _passkeys(value, where: str) -> dict | None:
+    if value is None:
+        return None
+    _mapping(value, where, 8, none=False)
+    keys = value.get("keys")
+    if not isinstance(keys, list) or len(keys) > MAX_ITEMS:
+        _refuse(f"{where}.keys", "is not a list of passkeys")
+    kept = []
+    for i, key in enumerate(keys):
+        at = f"{where}.keys[{i}]"
+        _mapping(key, at, 32, none=False)
+        count = key.get("count", 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            _refuse(f"{at}.count", "is not a counter")
+        kept.append({"id": _text(key.get("id"), f"{at}.id", 1024, empty=False),
+                     "key": _text(key.get("key"), f"{at}.key", 4096, empty=False),
+                     "rp": _text(key.get("rp"), f"{at}.rp", 253, empty=False), "count": count,
+                     "name": _text(key.get("name", ""), f"{at}.name", 200),
+                     "created": _number(key.get("created") or 0, f"{at}.created"),
+                     "used": None if key.get("used") is None else _number(key["used"], f"{at}.used"),
+                     "transports": _texts(key.get("transports"), f"{at}.transports", 8),
+                     "synced": bool(key.get("synced"))})
+    return {"handle": _text(value.get("handle", ""), f"{where}.handle", 256), "keys": kept}
+
+
+def _json_leaf(value, where: str, depth: int = 0):
+    """A value of a provider, a grant or a client: texts, numbers, booleans, lists and mappings of them, bounded."""
+    if depth > 4:
+        _refuse(where, "is nested too deep")
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _text(value, where)
+    if isinstance(value, list):
+        if len(value) > MAX_ITEMS:
+            _refuse(where, "is too long")
+        return [_json_leaf(v, f"{where}[]", depth + 1) for v in value]
+    if isinstance(value, dict):
+        _mapping(value, where, MAX_ITEMS, none=False)
+        return {k: _json_leaf(v, f"{where}.{k}", depth + 1) for k, v in value.items()}
+    _refuse(where, "is not a value of a package")
+
+
+def checked(package) -> dict:
+    """The package as this panel takes it, or IdentityImportError: its people are exactly the members of its
+    workspaces, each reference to a person (custom roles, servers, tokens, single sign-on, grants) is one of them,
+    every name is a user name, every role one of ROLES, every value of its type and size."""
     if not isinstance(package, dict) or package.get("format") != FORMAT:
         raise IdentityImportError("the machine did not answer a package of identities this panel reads (format 1)")
-    if not isinstance(package.get("people"), dict) or not isinstance(package.get("workspaces"), dict):
-        raise IdentityImportError("the package of identities has no people or no workspaces")
-    for name, person in package["people"].items():
-        if not isinstance(person, dict) or not isinstance(person.get("hash"), str) or not person["hash"]:
-            raise IdentityImportError(f"the person {str(name)[:40]} of the package has no password's hash")
+    people = _mapping(package.get("people"), "people", MAX_PEOPLE, none=False)
+    spaces = _mapping(package.get("workspaces"), "workspaces", MAX_WORKSPACES, none=False)
+    members_all: set[str] = set()
+    out_spaces = {}
+    for ws, data in spaces.items():
+        at = f"workspace {ws[:40]!r}"
+        if not WORKSPACE_NAME.fullmatch(ws):
+            _refuse(at, "is not a workspace's name")
+        data = _mapping(data, at, 32, none=False)
+        members = _mapping(data.get("members"), f"{at}.members", MAX_PEOPLE)
+        for person, role in members.items():
+            if not MEMBER_NAME.fullmatch(person) or not USER_NAME.fullmatch(person):
+                _refuse(f"{at}.members", f"has {person[:40]!r}, not a user name")
+            if role not in ROLES:
+                _refuse(f"{at}.members.{person}", f"has the role {str(role)[:20]!r}, not one of {', '.join(ROLES)}")
+        mine = set(members)
+        members_all |= mine
+
+        def person_of(value, where, mine=mine):
+            if not isinstance(value, str) or value not in mine:
+                _refuse(where, "names someone who is not a member of the workspace")
+            return value
+        roles = {}
+        for name, caps in _mapping(data.get("roles"), f"{at}.roles").items():
+            _text(name, f"{at}.roles", 40, empty=False)
+            caps = _texts(caps, f"{at}.roles.{name}", 64)
+            if any(c not in CAPABILITIES for c in caps):
+                _refuse(f"{at}.roles.{name}", "has a capability this panel does not know")
+            roles[name] = caps
+        member_roles = {}
+        for person, role in _mapping(data.get("member_roles"), f"{at}.member_roles").items():
+            person_of(person, f"{at}.member_roles")
+            if role not in roles:
+                _refuse(f"{at}.member_roles.{person}", "is not one of its custom roles")
+            member_roles[person] = role
+        member_servers = {person_of(p, f"{at}.member_servers"): _texts(v, f"{at}.member_servers.{p}")
+                          for p, v in _mapping(data.get("member_servers"), f"{at}.member_servers").items()}
+        tokens = {}
+        for name, token in _mapping(data.get("tokens"), f"{at}.tokens").items():
+            if not _TOKEN_NAME.fullmatch(name) or name.startswith("oauth:"):
+                _refuse(f"{at}.tokens", f"has {name[:40]!r}, not a token's name")
+            token = _mapping(token, f"{at}.tokens.{name}", 8, none=False)
+            if not isinstance(token.get("hash"), str) or not _TOKEN_HASH.fullmatch(token["hash"]):
+                _refuse(f"{at}.tokens.{name}.hash", "is not a token's hash")
+            if token.get("role") not in ROLES:
+                _refuse(f"{at}.tokens.{name}.role", f"is not one of {', '.join(ROLES)}")
+            tokens[name] = {"hash": token["hash"], "role": token["role"], "ci": bool(token.get("ci")),
+                            "servers": _texts(token.get("servers"), f"{at}.tokens.{name}.servers")}
+        token_people = {}
+        for name, person in _mapping(data.get("token_people"), f"{at}.token_people").items():
+            if name not in tokens:
+                _refuse(f"{at}.token_people", f"names a token {name[:40]!r} that did not come")
+            token_people[name] = person_of(person, f"{at}.token_people.{name}")
+        sso = data.get("sso")
+        if sso is not None:
+            sso = _mapping(sso, f"{at}.sso", 4, none=False)
+            provider = _json_leaf(_mapping(sso.get("provider"), f"{at}.sso.provider", 32, none=False), f"{at}.sso.provider")
+            identities = {}
+            for key, ident in _mapping(sso.get("identities"), f"{at}.sso.identities", MAX_PEOPLE).items():
+                ident = _mapping(ident, f"{at}.sso.identities", 8, none=False)
+                person_of(ident.get("user"), f"{at}.sso.identities")
+                identities[key] = _json_leaf(ident, f"{at}.sso.identities")
+            sso = {"provider": provider, "identities": identities}
+        grants = {}
+        for gid, grant in _mapping(data.get("grants"), f"{at}.grants").items():
+            grant = _json_leaf(_mapping(grant, f"{at}.grants", 64, none=False), f"{at}.grants")
+            person_of(grant.get("user"), f"{at}.grants.{gid[:20]}.user")
+            if grant.get("workspace") != ws:
+                _refuse(f"{at}.grants.{gid[:20]}", "is of another workspace")
+            grants[gid] = grant
+        clients = {cid: _json_leaf(_mapping(c, f"{at}.clients", 64, none=False), f"{at}.clients")
+                   for cid, c in _mapping(data.get("clients"), f"{at}.clients").items()}
+        out_spaces[ws] = {"label": _text(data.get("label") or "", f"{at}.label", 200), "members": dict(members),
+                          "roles": roles, "member_roles": member_roles, "member_servers": member_servers,
+                          "token_people": token_people, "tokens": tokens, "sso": sso, "grants": grants,
+                          "clients": clients}
+    if set(people) != members_all:
+        _refuse("people", "are not the members of its workspaces: "
+                + ", ".join(sorted(set(people) ^ members_all)[:5]))
+    out_people = {}
+    for name, person in people.items():
+        person = _mapping(person, f"person {name[:40]!r}", 8, none=False)
+        out_people[name] = {"hash": _password_hash(person.get("hash"), f"the hash of {name[:40]!r}"),
+                            "second_factor": _second_factor(person.get("second_factor"), f"the app of {name[:40]!r}"),
+                            "passkeys": _passkeys(person.get("passkeys"), f"the passkeys of {name[:40]!r}")}
+    return {"format": FORMAT, "portal": _text(package.get("portal") or "", "portal", 300),
+            "people": out_people, "workspaces": out_spaces}
 
 
 def imported(package: dict, taken, link: str, by: str, now: str) -> dict:
     """The record of a machine's import (the module's docstring): its people under the names they arrive with,
     with the same hashes and secrets, and its workspaces with their members, roles, custom roles, tokens, SSO and
-    grants renamed the same way."""
-    _check_package(package)
+    grants renamed the same way. A package checked() refuses is refused (IdentityImportError)."""
+    package = checked(package)
     names = names_map(first_workspace(package), taken)
-    people = {}
-    for there, data in sorted(package["people"].items()):
-        here = names.get(there, there)
-        people[here] = {"from": there, "hash": data["hash"], "second_factor": data.get("second_factor"),
-                        "passkeys": data.get("passkeys")}
+    if set(names) != set(package["people"]):
+        raise IdentityImportError("the package of identities is refused: a person without a workspace")
+    people = {names[there]: {"from": there, **data} for there, data in sorted(package["people"].items())}
 
     def rn(name):
-        return names.get(name, name)
+        return names[name]
 
     workspaces = {}
     for name, data in sorted(package["workspaces"].items()):
-        sso = data.get("sso")
-        if isinstance(sso, dict):
-            sso = {"provider": sso.get("provider"),
-                   "identities": {k: {**v, "user": rn(v.get("user"))} for k, v in (sso.get("identities") or {}).items()
-                                  if isinstance(v, dict)}}
+        sso = data["sso"]
+        if sso is not None:
+            sso = {"provider": sso["provider"],
+                   "identities": {k: {**v, "user": rn(v["user"])} for k, v in sso["identities"].items()}}
         workspaces[name] = {
-            "label": data.get("label") or "",
-            "members": {rn(m): r for m, r in (data.get("members") or {}).items()},
-            "roles": data.get("roles") or {},
-            "member_roles": {rn(m): r for m, r in (data.get("member_roles") or {}).items()},
-            "member_servers": {rn(m): v for m, v in (data.get("member_servers") or {}).items()},
-            "token_people": {t: rn(p) for t, p in (data.get("token_people") or {}).items()},
-            "tokens": data.get("tokens") or {},
-            "sso": sso,
-            "grants": {g: {**v, "user": rn(v.get("user"))} for g, v in (data.get("grants") or {}).items()
-                       if isinstance(v, dict)},
-            "clients": data.get("clients") or {}}
-    return {"format": FORMAT, "link": link, "at": now, "by": by, "portal": package.get("portal") or "",
+            "label": data["label"], "members": {rn(m): r for m, r in data["members"].items()},
+            "roles": data["roles"], "member_roles": {rn(m): r for m, r in data["member_roles"].items()},
+            "member_servers": {rn(m): v for m, v in data["member_servers"].items()},
+            "token_people": {t: rn(p) for t, p in data["token_people"].items()}, "tokens": data["tokens"],
+            "sso": sso, "grants": {g: {**v, "user": rn(v["user"])} for g, v in data["grants"].items()},
+            "clients": data["clients"]}
+    return {"format": FORMAT, "link": link, "at": now, "by": by, "portal": package["portal"],
             "names": {o: n for o, n in sorted(names.items())}, "people": people, "workspaces": workspaces}
 
 
@@ -316,12 +528,16 @@ def _write_private(path: Path, data: dict) -> None:
 
 
 class Store:
-    """The imports of this central panel, one file per link (the module's docstring)."""
+    """The imports of this central panel, one file per link (the module's docstring). The package itself is never
+    written: it is read through the link into memory, checked, and what this panel keeps of it is the record."""
 
     def __init__(self, base: Path):
         self.base = Path(base)
         self.folder = self.base / FOLDER
         self._lock = threading.Lock()
+        # a package of before slice 1's review was staged beside the folder: none may stay on the disk
+        for left in self.base.glob(".identity-package-*") if self.base.is_dir() else ():
+            left.unlink(missing_ok=True)
 
     def path(self, link: str) -> Path:
         if not _LINK.fullmatch(link or ""):
@@ -349,6 +565,14 @@ class Store:
                 found |= set(((self.load(other) or {}).get("people") or {}))
         return found
 
+    def workspaces_of_others(self, link: str) -> set[str]:
+        """The workspaces other links' imports brought: a name of them, like one of this panel's, is taken."""
+        found: set[str] = set()
+        for other in self.links():
+            if other != link:
+                found |= set(((self.load(other) or {}).get("workspaces") or {}))
+        return found
+
     def save(self, link: str, record: dict) -> None:
         with self._lock:
             self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -363,36 +587,35 @@ class Store:
             path.unlink()
             return True
 
-    # the package, while it is imported
-    def stage(self, link: str, raw: bytes) -> Path:
-        """The package as the link brought it, in a file of its own (600) beside the folder, never in it."""
-        self.path(link)
-        self.base.mkdir(parents=True, exist_ok=True)
-        path = self.base / f"{STAGED}{link}-{secrets.token_hex(6)}.json"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(raw)
-        return path
-
-    def staged(self) -> list[Path]:
-        return sorted(self.base.glob(f"{STAGED}*")) if self.base.is_dir() else []
-
     # the proof of slice 1 (AD-018 §9.1): a person imported here with the same password and the same app
     def check(self, link: str, name: str, password: str, code: str, at: float | None = None) -> bool:
         """Whether name, imported from link, logs in with password and a code of its app of two-step verification:
-        the same hash and the same secret as on the machine. A code accepted is struck out (its step is kept, as
-        totp.SecondFactors does): the same code is not accepted twice. The login of the imported people on this
-        panel's pages is slice 2's: this is the check it will call."""
+        the same hash and the same secret as on the machine. An unknown name pays a dummy hash's time (who was
+        imported is not told by time); the hash is verified outside the lock. A code accepted is struck out (its
+        step is kept, as totp.SecondFactors does): the same code is not accepted twice. The login of the imported
+        people on this panel's pages is slice 2's: this is the check it will call."""
+        person = ((self.load(link) or {}).get("people") or {}).get(name)
+        encoded = person.get("hash") if isinstance(person, dict) and isinstance(person.get("hash"), str) else None
+        found = _PBKDF2.fullmatch(encoded or "")
+        if found is None or not MIN_ITERATIONS <= int(found.group(1)) <= MAX_ITERATIONS:
+            verify_password(password, _dummy())
+            return False
+        if not verify_password(password, encoded):
+            return False
         with self._lock:
+            # read again: a code accepted meanwhile is struck out already
             record = self.load(link)
             person = ((record or {}).get("people") or {}).get(name)
-            if not person or not verify_password(password, str(person.get("hash") or "")):
+            factor = person.get("second_factor") if isinstance(person, dict) else None
+            if not isinstance(factor, dict) or not isinstance(factor.get("secret"), str) or not factor["secret"]:
                 return False
-            factor = person.get("second_factor")
-            if not isinstance(factor, dict) or not factor.get("secret"):
+            last = factor.get("last", -1)
+            if isinstance(last, bool) or not isinstance(last, int):
                 return False
-            step = totp.code_step(str(factor["secret"]), code, at if at is not None else time.time(),
-                                  int(factor.get("last", -1)))
+            try:
+                step = totp.code_step(factor["secret"], str(code), at if at is not None else time.time(), last)
+            except (ValueError, TypeError):
+                return False
             if step is None:
                 return False
             factor["last"] = step

@@ -67,10 +67,13 @@
  "Workspaces": "Workspace",
  "renamed": "rinominata",
  "the identities of the linked machines' workspaces imported here (AD-018)": "le identità dei workspace delle macchine collegate importate qui (AD-018)",
+ "the package of identities is refused: {where} {what}": "il pacchetto delle identità è rifiutato: {where} {what}",
  "{members} people, {tokens} tokens": "{members} persone, {tokens} token",
  "{name} answered a dry run this panel does not read": "{name} ha risposto con una prova a vuoto che questo pannello non legge",
+ "{name} answered more than {size} bytes: refused": "{name} ha risposto più di {size} byte: rifiutato",
  "{name} answered {status}: {said}": "{name} ha risposto {status}: {said}",
  "{name} did not answer JSON": "{name} non ha risposto in JSON",
+ "{name} did not answer within {seconds} s": "{name} non ha risposto entro {seconds} s",
  "{name} has no export of identities: its OmniaCLI is older, update it first": "{name} non ha l'esportazione delle identità: il suo OmniaCLI è più vecchio, aggiornalo prima",
  "{people} people: {totp} with an authenticator app, {passkeys} passkeys": "{people} persone: {totp} con un'app di autenticazione, {passkeys} passkey"
 }

@@ -383,12 +383,25 @@ Per ogni fetta: il rilascio, la prova su lab3/lab4, come si annulla, la stima. l
    - **I nomi.** `<nome>.<workspace>` (il primo W della persona, per nome), poi `-2`, `-3`: `handover.names_map`,
      contro gli utenti del centrale **e** le persone importate da altri collegamenti.
    - **Dove sta.** `identity-imports/<link>.json` (600, cartella 700) accanto ai dati del centrale, nello slot
-     `identity_imports` del backup notturno cifrato e nel purge. Il pacchetto passa da `.identity-package-<link>-*.json`
-     (600, fuori dalla cartella: un backup non lo prende mai) e si cancella appena letto. Rifare l'import sostituisce
-     quello di prima; «Cancella l'import…» toglie il file e basta.
+     `identity_imports` del backup notturno cifrato e nel purge. Il pacchetto resta solo in memoria: letto in streaming
+     con al massimo 64 MiB (`MAX_PACKAGE`) e 60 s in tutto (`TIMEOUT`, `asyncio.wait_for`: i timeout di httpx sono per
+     fase e una macchina che risponde un byte alla volta non li fa mai scattare), fuori da `identity_lock`, che tengono
+     solo il controllo e il salvataggio: una macchina lenta non blocca un altro import né un annullamento. Rifare
+     l'import sostituisce quello di prima; «Cancella l'import…» toglie il file e basta.
+   - **La macchina non è fidata** (la regola di AD-009, la revisione della fetta 1). `checked()` rifiuta tutto il
+     pacchetto se: le persone non sono esattamente i membri dei suoi W (prima una persona fuori dai membri teneva il
+     suo nome, anche quello di un admin del centrale, con l'hash della macchina); un riferimento a una persona (ruolo
+     personalizzato, server, token, identità SSO, grant) non è uno di quei membri; un nome non è un nome utente o di
+     workspace; un ruolo non è `user`, `developer` o `admin`; un hash non è PBKDF2-SHA256 da 1.000 a 1.200.000
+     iterazioni (o il segno di chi non ha ancora una password); un valore non è del suo tipo o della sua misura.
+     `summary()` gira prima del salvataggio, e ogni errore del pacchetto è un 502 nel registro, mai un record salvato.
+   - **Il proxy** decodifica il percorso (fino a tre volte) e rifiuta segmenti `.`, `..` e vuoti: prima
+     `api/%2e/identity/…` passava il blocco perché il client lo normalizza (la macchina lo rifiutava comunque,
+     `person`). Vale anche per `api/pages`.
    - **La prova del TOTP** è a livello di funzione: `Store.check(link, persona, password, codice)` (lo stesso hash, lo
-     stesso segreto, il passo segnato: lo stesso codice non vale due volte). Il login delle persone importate sulle
-     pagine del centrale è della fetta 2.
+     stesso segreto, il passo segnato: lo stesso codice non vale due volte). Il PBKDF2 gira fuori dal lock; un nome
+     sconosciuto paga un hash finto (come `Authenticator`); un hash fuori misura o un passo che non è un intero danno
+     `False`, mai un'eccezione. Il login delle persone importate sulle pagine del centrale è della fetta 2.
    - **Provato** (25/11/2026, lab3 centrale e lab4 macchina, codice del ramo `ad018-s1-import`): lab4 con 2 W e 6
      persone (2 app TOTP, 1 passkey su `omnia-lab4.example.net`, 1 SSO finto, 1 token di W, 1 grant, 1 ruolo
      personalizzato), `mario` anche su lab3. La prova a vuoto di lab3 contro i file di lab4 letti senza il codice di

@@ -7,6 +7,7 @@ the import keeps on the central the same hashes and secrets, and a code computed
 no secret in any page or JSON the central shows; only the central's admin link reads them on the machine, every read
 in its access log with who asked; the undo deletes the import and leaves the machine as it was."""
 
+import asyncio
 import dataclasses
 import hashlib
 import json
@@ -56,9 +57,13 @@ class Machine(httpx.AsyncBaseTransport):
     def __init__(self, app):
         self.asgi = httpx.ASGITransport(app=app)
         self.asked: list[tuple[str, dict]] = []
+        # path: a function of nothing that makes the answer instead (a machine that lies, drips or floods)
+        self.answer: dict = {}
 
     async def handle_async_request(self, request):
         self.asked.append((request.url.path, dict(request.headers)))
+        if request.url.path in self.answer:
+            return self.answer[request.url.path]()
         return await self.asgi.handle_async_request(request)
 
 
@@ -113,6 +118,7 @@ async def pair(env, tmp_path):
     conf.mkdir()
     (conf / "links.yaml").write_text(yaml.safe_dump({"links": {
         "lab4": {"url": "http://machine.test", "token": CENTRAL_LINK_TOKEN},
+        "lab5": {"url": "http://machine.test", "token": CENTRAL_LINK_TOKEN},
         "lab4dev": {"url": "http://machine.test", "token": DEV_LINK_TOKEN}}}))
     central = parse_settings({"auth": {"users": {"admin": USER_HASH, "mario": USER_HASH,
                                                  "dev": {"password": USER_HASH, "role": "developer"}},
@@ -208,7 +214,7 @@ async def test_the_import_keeps_the_same_hashes_and_a_totp_code_passes(pair):
     # kept readable by its owner only, the package gone
     assert stat.S_IMODE(store.path("lab4").stat().st_mode) == 0o600
     assert stat.S_IMODE(store.folder.stat().st_mode) == 0o700
-    assert store.staged() == []
+    assert not list(store.base.glob(".identity-package-*"))
     # the export read through the link, in the machine's access log with who asked; nothing written there
     assert "identities of the workspaces (export, with their secrets): GET /api/identity/v1/export -> 200 for admin" \
         in machine_log(pair)
@@ -343,6 +349,152 @@ async def test_the_page_in_italian_with_one_primary_button(pair):
 def test_the_purge_and_the_backup_of_the_central_take_them():
     purge = (Path(cli.__file__).parent.parent / "packaging" / "debian" / "files" / "postrm").read_text()
     purge = purge.split("    purge)", 1)[1]
-    assert "/var/lib/omniacli/identity-imports" in purge and f"/var/lib/omniacli/{identityimport.STAGED}*" in purge
+    assert "/var/lib/omniacli/identity-imports" in purge
     slot = centralbackup.BY_SLOT["identity_imports"]
     assert slot.folder
+
+
+# --- the review of slice 1: a machine is not trusted with what it writes on the central --------------------------
+
+H = hash_password("pw", iterations=1000)
+
+
+def package(**more):
+    found = {"format": 1, "portal": "", "people": {"anna": {"hash": H}},
+             "workspaces": {"acme": {"members": {"anna": "admin"}}}}
+    found.update(more)
+    return found
+
+
+def ws_with(**more):
+    return {"acme": {"members": {"anna": "admin"}, **more}}
+
+
+@pytest.mark.parametrize("bad, why", [
+    # a person in no workspace's members would keep its name: a staff name of the central, with the machine's hash
+    (package(people={"anna": {"hash": H}, "admin": {"hash": H}}), "are not the members of its workspaces"),
+    (package(workspaces=ws_with(sso={"provider": {"issuer": "https://evil"},
+                                     "identities": {"https://evil|1": {"user": "carlo"}}})), "not a member"),
+    (package(workspaces=ws_with(grants={"g": {"user": "carlo", "workspace": "acme"}})), "not a member"),
+    (package(workspaces=ws_with(tokens={"t": {"hash": "sha256$" + "0" * 64, "role": "user"}},
+                                token_people={"t": "carlo"})), "not a member"),
+    (package(workspaces=ws_with(token_people={"t": "anna"})), "did not come"),
+    (package(workspaces=ws_with(roles={"r": ["backup"]}, member_roles={"carlo": "r"})), "not a member"),
+    (package(workspaces=ws_with(member_servers={"carlo": ["srv"]})), "not a member"),
+    (package(workspaces=ws_with(grants={"g": {"user": "anna", "workspace": "beta"}})), "another workspace"),
+    # names, roles and values of their type
+    (package(people={"a b": {"hash": H}}, workspaces={"acme": {"members": {"a b": "admin"}}}), "not a user name"),
+    (package(workspaces={"acme": {"members": {"anna": "workspace"}}}), "not one of"),
+    (package(workspaces={"ACME!": {"members": {"anna": "admin"}}}), "not a workspace's name"),
+    (package(workspaces={"acme": ["x"]}), "not a mapping"),
+    (package(people={"anna": {"hash": H, "passkeys": "x"}}), "not a mapping"),
+    (package(people={"anna": {"hash": H, "second_factor": {"secret": "JBSWY3DPEHPK3PXP", "last": "x"}}}),
+     "not a step"),
+    (package(people={"anna": {"hash": "pbkdf2_sha256$20000000$" + "00" * 16 + "$" + "00" * 32}}), "iterations"),
+    (package(people={"anna": {"hash": "plain"}}), "iterations"),
+    (package(workspaces=ws_with(roles={"r": ["root"]})), "capability"),
+    ({"format": 1, "people": [], "workspaces": {}}, "not a mapping"),
+])
+def test_a_package_that_reaches_beyond_its_people_is_refused(bad, why):
+    with pytest.raises(identityimport.IdentityImportError) as caught:
+        identityimport.imported(bad, {"admin", "carlo"}, "m1", "x", "now")
+    assert why in str(caught.value), caught.value
+
+
+def test_every_person_of_a_package_is_mapped_and_kept_whole():
+    record = identityimport.imported(package(), {"anna"}, "m1", "x", "now")
+    assert set(record["people"]) == {"anna.acme"} and record["names"] == {"anna": "anna.acme"}
+    assert record["workspaces"]["acme"]["members"] == {"anna.acme": "admin"}
+
+
+async def test_a_machine_that_lies_saves_nothing_and_the_page_still_opens(pair):
+    store = identityimport.Store(pair.app.state.settings.jobs_dir.parent)
+    for bad in (package(people={"anna": {"hash": H, "passkeys": "x"}}), package(workspaces={"acme": ["x"]}),
+                package(people={"anna": {"hash": H}, "mario": {"hash": H}})):
+        pair.machine.answer[identityimport.API + "/export"] = lambda bad=bad: httpx.Response(200, json=bad)
+        resp = await pair.post("/api/identities/lab4/import", headers=POST, json={"confirm": "lab4"})
+        assert resp.status_code == 502 and "refused" in resp.json()["error"], resp.text
+        assert store.load("lab4") is None
+    assert (await pair.get("/identities/lab4", headers={**ADMIN, "Accept": "text/html"})).status_code == 200
+    assert "the identities of lab4 refused" in json.dumps(pair.app.state.access_log.recent())
+
+
+class Drip(httpx.AsyncByteStream):
+    """A machine that answers one byte at a time, forever: no phase of httpx's timeouts ever trips."""
+
+    async def __aiter__(self):
+        for _ in range(10_000):
+            await asyncio.sleep(0.05)
+            yield b" "
+
+
+class Flood(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        for _ in range(10_000):
+            yield b"x" * 65536
+
+
+async def test_a_slow_or_huge_machine_holds_nothing(pair, monkeypatch):
+    store = identityimport.Store(pair.app.state.settings.jobs_dir.parent)
+    await pair.post("/api/identities/lab5/import", headers=POST, json={"confirm": "lab5"})
+    monkeypatch.setattr(identityimport, "TIMEOUT", 1.0)
+    pair.machine.answer[identityimport.API + "/export"] = lambda: httpx.Response(200, stream=Drip())
+    slow = asyncio.create_task(pair.post("/api/identities/lab4/import", headers=POST, json={"confirm": "lab4"}))
+    await asyncio.sleep(0.2)
+    # while lab4 drips, the undo of another import does not wait for it
+    began = time.monotonic()
+    gone = await pair.post("/api/identities/lab5/delete", headers=POST, json={"confirm": "lab5"})
+    assert gone.status_code == 200 and time.monotonic() - began < 0.8
+    resp = await slow
+    assert resp.status_code == 502 and "did not answer within 1 s" in resp.json()["error"]
+    # an answer larger than a package may be: read no further
+    monkeypatch.setattr(identityimport, "MAX_PACKAGE", 1 << 20)
+    pair.machine.answer[identityimport.API + "/export"] = lambda: httpx.Response(200, stream=Flood())
+    resp = await pair.post("/api/identities/lab4/import", headers=POST, json={"confirm": "lab4"})
+    assert resp.status_code == 502 and f"more than {1 << 20} bytes" in resp.json()["error"]
+    assert store.load("lab4") is None and not list(store.base.glob(".identity-package-*"))
+
+
+def test_no_package_stays_on_the_disk(tmp_path):
+    left = tmp_path / ".identity-package-m1-0123.json"
+    left.write_text('{"secret": 1}')
+    identityimport.Store(tmp_path)
+    assert not left.exists()
+
+
+def test_the_check_pays_the_same_and_never_raises(tmp_path, monkeypatch):
+    store = identityimport.Store(tmp_path)
+    store.save("m1", identityimport.imported(package(people={"anna": {"hash": H, "second_factor": {
+        "secret": "JBSWY3DPEHPK3PXP"}}}), set(), "m1", "x", "now"))
+    seen = []
+    real = identityimport.verify_password
+    monkeypatch.setattr(identityimport, "verify_password", lambda p, h: seen.append(h) or real(p, h))
+    # an unknown name pays a hash, as a known one does
+    assert not store.check("m1", "ghost", "pw", "000000")
+    assert seen and seen[-1] != H
+    # a record changed on the disk (a hash of attacker-chosen cost, a step that is not one) is refused, quickly
+    record = store.load("m1")
+    record["people"]["anna"]["hash"] = "pbkdf2_sha256$20000000$" + "00" * 16 + "$" + "00" * 32
+    store.save("m1", record)
+    began = time.monotonic()
+    assert not store.check("m1", "anna", "pw", "000000") and time.monotonic() - began < 1
+    record["people"]["anna"].update(hash=H, second_factor={"secret": "JBSWY3DPEHPK3PXP", "last": "x"})
+    store.save("m1", record)
+    assert store.check("m1", "anna", "pw", totp.totp("JBSWY3DPEHPK3PXP")) is False
+
+
+async def test_a_dot_segment_does_not_pass_the_proxy(pair):
+    for path in ("api/%2e/identity/v1/export", "x/%2e%2e/api/identity/v1/export", "api/./pages/disks",
+                 "api/%252e/identity/v1/export", "api//identity/v1/export"):
+        pair.machine.asked.clear()
+        resp = await pair.get(f"/links/lab4/{path}", headers=ADMIN)
+        assert resp.status_code == 404, path
+        assert not [a for a, _ in pair.machine.asked if "identity" in a or "pages" in a], path
+
+
+async def test_a_workspace_another_import_brought_is_taken(pair):
+    await pair.post("/api/identities/lab5/import", headers=POST, json={"confirm": "lab5"})
+    plan = (await pair.get("/api/identities/lab4", headers=ADMIN)).json()["plan"]
+    assert {w["name"]: w["taken_here"] for w in plan["workspaces"]} == {"acme": True, "beta": True}
+    # and its people too: each arrives with its workspace's name
+    assert plan["renamed"]["anna"] == "anna.acme" and plan["renamed"]["dario"] == "dario.beta"

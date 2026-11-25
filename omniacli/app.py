@@ -36,7 +36,7 @@ import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, List, Optional
-from urllib.parse import parse_qs, quote, unquote_plus, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, unquote, unquote_plus, urlencode, urlsplit
 
 import httpx
 import jinja2
@@ -12019,8 +12019,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if me.kind != "user":
             raise HTTPException(status.HTTP_403_FORBIDDEN, "Only a user who logs in here may use a link")
         link = a_link(name)
-        if (path == "api/pages" or path.startswith("api/pages/")
-                or path.startswith("api/identity/")):
+        # a path with a dot segment or an empty one is refused: the client that passes it on normalises it, and
+        # api/%2e/identity/… would reach what the line below keeps from a browser (the review of AD-018 slice 1)
+        plain = path
+        for _ in range(3):
+            plain = unquote(plain)
+        segments = plain.split("/")
+        if any(s in (".", "..") for s in segments) or "" in segments[:-1] or "\\" in plain:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Not Found")
+        if (plain == "api/pages" or plain.startswith("api/pages/") or plain == "api/identity"
+                or plain.startswith("api/identity/")):
             # the models of the pages are read by this panel, never by a browser through the link (they are drawn
             # here with the role of who looks, and its script has nothing to do with them); so are the identities
             # of the machine's workspaces (AD-018 slice 1): their package carries secrets
@@ -15351,8 +15359,6 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     identity_store = identityimport.Store(settings.jobs_dir.parent)
     identity_lock = asyncio.Lock()
-    # the package can be large (every person's passkeys, every grant): its time, as a page's (AD-018 §8.9)
-    IDENTITY_TIMEOUT = 60.0
 
     def identity_sources() -> dict:
         """What identityimport reads of this machine: the workspaces, the people, their stores, the tokens of a
@@ -15434,29 +15440,61 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                          "code": "forbidden"}
         return None
 
-    async def identity_ask(link: LinkTarget, me: Principal, path: str) -> tuple[httpx.Response | None, str]:
-        """The machine's answer to path through the link, or why there is none."""
+    # what the machine may answer at most (identityimport): its package and its dry run
+    IDENTITY_MOST = {"/export": "MAX_PACKAGE", "/inventory": "MAX_INVENTORY"}
+
+    async def identity_ask(link: LinkTarget, me: Principal, path: str) -> tuple[object | None, str]:
+        """The machine's answer to path through the link, parsed, or why there is none. Read whole within
+        identityimport.TIMEOUT (httpx's timeouts are per phase: a machine that drips its answer a byte at a time never
+        trips them) and within IDENTITY_MOST bytes: a machine never holds this panel nor fills its memory."""
+        most, timeout = getattr(identityimport, IDENTITY_MOST[path]), identityimport.TIMEOUT
+
+        async def read() -> tuple[int, bytes]:
+            async with link_clients.client(link).stream(
+                    "GET", identityimport.API + path, timeout=timeout,
+                    headers={**link_headers(link, me.name, me.role), "Accept": "application/json"}) as resp:
+                chunks, size = [], 0
+                async for chunk in resp.aiter_bytes():
+                    size += len(chunk)
+                    if size > most:
+                        raise identityimport.IdentityImportError(
+                            f"{link.name} answered more than {most} bytes: refused")
+                    chunks.append(chunk)
+                return resp.status_code, b"".join(chunks)
         try:
-            resp = await link_clients.client(link).get(
-                identityimport.API + path, timeout=IDENTITY_TIMEOUT,
-                headers={**link_headers(link, me.name, me.role), "Accept": "application/json"})
+            code, raw = await asyncio.wait_for(read(), timeout)
+        except asyncio.TimeoutError:
+            return None, f"{link.name} did not answer within {timeout:g} s"
+        except identityimport.IdentityImportError as exc:
+            return None, str(exc)
         except httpx.HTTPError as exc:
             return None, describe_error(exc)
-        if resp.status_code == 404:
+        try:
+            found = json.loads(raw) if raw else None
+        except ValueError:
+            found = None
+        if code == 404:
             return None, f"{link.name} has no export of identities: its OmniaCLI is older, update it first"
-        if resp.status_code != 200:
-            try:
-                found = resp.json()
-                said = str(found.get("detail") or found.get("error") or "")
-            except (ValueError, AttributeError):
-                said = ""
-            return None, f"{link.name} answered {resp.status_code}" + (f": {said}" if said else "")
-        return resp, ""
+        if code != 200:
+            said = str(found.get("detail") or found.get("error") or "")[:300] if isinstance(found, dict) else ""
+            return None, f"{link.name} answered {code}" + (f": {said}" if said else "")
+        if found is None:
+            return None, f"{link.name} did not answer JSON"
+        return found, ""
+
+    def identity_summary(name: str) -> dict | None:
+        """What was imported from the link name, by count; a record this panel cannot read says nothing."""
+        try:
+            return identityimport.summary(identity_store.load(name))
+        except (ValueError, TypeError, AttributeError, KeyError):
+            return None
 
     async def identity_act(op: str, name: str, me: Principal, source: str, ip: str = "",
                            body: Optional[dict] = None) -> tuple[int, dict]:
         """(status, answer) of op on the identities of the link name's machine: status (the dry run said item by
-        item, and what was imported), import, delete (the undo). As the page, the REST API and MCP ask it."""
+        item, and what was imported), import, delete (the undo). As the page, the REST API and MCP ask it. The
+        machine is read outside identity_lock: only checking and saving hold it, so a machine slow to answer never
+        holds another import nor an undo."""
         refused = identity_refusal(me)
         if refused is not None:
             return refused
@@ -15478,41 +15516,38 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if link is None:
             return 404, {"error": f"No link {name}", "code": "not_found"}
         if op == "status":
-            resp, error = await identity_ask(link, me, "/inventory")
-            dry = None
-            if resp is not None:
-                try:
-                    dry = resp.json()
-                except ValueError:
-                    error = f"{name} did not answer JSON"
+            dry, error = await identity_ask(link, me, "/inventory")
             shown = None
             if isinstance(dry, dict) and dry.get("format") == identityimport.FORMAT:
-                shown = identityimport.plan(dry, identity_store.taken(name, settings.users), portal_url(),
-                                            sorted(settings.workspaces))
-            elif not error:
+                try:
+                    # a workspace of this panel, or one another link's import brought, is taken
+                    shown = identityimport.plan(dry, identity_store.taken(name, settings.users), portal_url(),
+                                                sorted(set(settings.workspaces)
+                                                       | identity_store.workspaces_of_others(name)))
+                except (ValueError, TypeError, AttributeError, KeyError):
+                    shown = None
+            if shown is None and not error:
                 error = f"{name} answered a dry run this panel does not read"
             access_log.record("read", me.kind, me.name, ip,
                               f"identities of the workspaces of {name} (dry run)" + (f": {error}" if error else ""),
                               what="identities of a linked machine (dry run)")
             return 200, {"link": name, "reached": shown is not None, "error": error, "plan": shown,
-                         "imported": identityimport.summary(identity_store.load(name))}
+                         "imported": identity_summary(name)}
         if op == "import":
+            package, error = await identity_ask(link, me, "/export")
+            if package is None:
+                return 502, {"error": f"The identities of {name} were not read: {error}", "code": "failed"}
             async with identity_lock:
-                resp, error = await identity_ask(link, me, "/export")
-                if resp is None:
-                    return 502, {"error": f"The identities of {name} were not read: {error}", "code": "failed"}
-                staged = await asyncio.to_thread(identity_store.stage, name, resp.content)
                 try:
-                    package = json.loads(staged.read_bytes())
                     record = identityimport.imported(package, identity_store.taken(name, settings.users), name,
                                                      str(me), datetime.datetime.now().isoformat(timespec="seconds"))
-                    await asyncio.to_thread(identity_store.save, name, record)
-                except ValueError as exc:
+                    # said before it is saved: a record the pages could not read is never kept
+                    done = identityimport.summary(record)
+                except (ValueError, TypeError, AttributeError, KeyError) as exc:
+                    access_log.record("action", me.kind, me.name, ip,
+                                      f"the identities of {name} refused: {exc}"[:300], status="failed")
                     return 502, {"error": f"The identities of {name} were not imported: {exc}", "code": "failed"}
-                finally:
-                    # the package goes as soon as it is read: what stays is the record of the import (600)
-                    staged.unlink(missing_ok=True)
-            done = identityimport.summary(record)
+                await asyncio.to_thread(identity_store.save, name, record)
             said = ", ".join(f"{o} as {n}" for o, n in done["renamed"].items())
             access_log.record("action", me.kind, me.name, ip,
                               f"the identities of {name} imported on this panel: {done['people']} people "

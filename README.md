@@ -1428,12 +1428,21 @@ panel does not log them in yet. **Links › Identità** on a link's row
 2. **Import here.** The machine's package (the same PBKDF2 hashes, the TOTP
    secrets with the step of their last code, the recovery codes' hashes, the
    passkeys with their RP ID and counter, the SSO providers with their client
-   secret, the tokens' and grants' hashes) is read through the link, kept in a
-   file of its own (600) only while it is read, and deleted; what stays is
+   secret, the tokens' and grants' hashes) is read through the link into
+   memory, never on a disk: 64 MiB and 60 s at most, whatever the machine
+   drips, and outside the lock an undo takes. It is checked before anything is
+   kept, since a machine is not trusted with what it writes here: its people
+   are exactly the members of its workspaces, every reference to a person (a
+   custom role, servers, a token, an SSO identity, a grant) is one of them,
+   every name is a user name, every role `user`, `developer` or `admin`, every
+   hash a PBKDF2-SHA256 this panel verifies (1,000 to 1,200,000 iterations),
+   every value of its type and size; anything else refuses the whole package
+   (502, in the access log) and nothing is saved. What stays is
    `identity-imports/<link>.json` (600, in a 700 folder) beside the other data
    of this panel, in its nightly backup, in the purge. Again replaces the import
    of before. Only the people of role `workspace` and the tokens of a workspace
-   pass; the machine's own people, its tokens and its links never.
+   pass; the machine's own people, its tokens and its links never. A workspace
+   another machine's import brought is pointed out as one of this panel's is.
 3. **Delete the import…** is the undo: the file goes, the machine is not
    touched.
 
