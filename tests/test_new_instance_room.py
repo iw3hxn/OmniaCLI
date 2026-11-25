@@ -116,9 +116,10 @@ async def test_no_workspace_with_room_says_what_to_do(workspaces, client, env, m
     data = (await client.get("/api/instances/versions", headers={"Authorization": AUTH})).json()
     shown = run_advice(page, data, "/links/ber")
     assert shown["advice"]["ways"] == []
-    assert shown["advice"]["text"] == ("Nessun workspace ha spazio per una nuova istanza nel suo disco: riduci il "
-                                       "disco di un workspace in Workspace › Limiti e disco, oppure libera spazio "
-                                       "sul disco.")
+    # never «lower a workspace's disk»: a disk is not made smaller (workspaceops.disk_problem)
+    assert shown["advice"]["text"] == ("Nessun workspace ha spazio per una nuova istanza nel suo disco, e il disco "
+                                       "di un workspace non si riduce: libera spazio sul disco di questa macchina, "
+                                       "oppure dalle un disco più grande.")
     # an older OmniaCLI says only the room left: the words of before, no advice
     old = {k: v for k, v in data.items() if k not in ("disk_free_gb", "reserved_gb", "promised")}
     shown = run_advice(page, old, "")

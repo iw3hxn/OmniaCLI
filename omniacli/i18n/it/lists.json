@@ -55,7 +55,7 @@
  "No production {server} in workspace {name}": "Nessuna produzione {server} nel workspace {name}",
  "No scheduled backup": "Nessun backup programmato",
  "No server can make a new instance now: see why beside each": "Nessun server può creare una nuova istanza adesso: il motivo è accanto a ciascuno",
- "No workspace has room for one inside its own disk: lower the disk of a workspace in Workspaces › Limits and disk, or free room on the disk.": "Nessun workspace ha spazio per una nuova istanza nel suo disco: riduci il disco di un workspace in Workspace › Limiti e disco, oppure libera spazio sul disco.",
+ "No workspace has room for one inside its own disk, and a workspace's disk is never made smaller: free room on this machine's disk, or give it a larger one.": "Nessun workspace ha spazio per una nuova istanza nel suo disco, e il disco di un workspace non si riduce: libera spazio sul disco di questa macchina, oppure dalle un disco più grande.",
  "No workspace of this machine can hold a new instance now": "Nessun workspace di questa macchina può tenere una nuova istanza adesso",
  "Not enough room: {why}": "Spazio insufficiente: {why}",
  "Not listed: {names}.": "Non elencati: {names}.",
