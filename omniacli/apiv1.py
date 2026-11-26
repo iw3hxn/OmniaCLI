@@ -51,6 +51,11 @@ V1_WORKSPACE_TOOLS = {
     # where an instance's backups go off site (AD-016 §16.1): the default of the server or a destination it may use
     ("GET", "/api/v1/instances/{server}/{role}/destination"): ("instance_destination",),
     ("POST", "/api/v1/instances/{server}/{role}/destination"): ("set_instance_destination",),
+    # the recovery at a minute of a workspace's production: its state, switched on and off, the days it keeps
+    ("GET", "/api/v1/instances/{server}/{role}/pitr"): ("pitr_status",),
+    ("POST", "/api/v1/instances/{server}/{role}/pitr/enable"): ("pitr_enable",),
+    ("POST", "/api/v1/instances/{server}/{role}/pitr/disable"): ("pitr_disable",),
+    ("POST", "/api/v1/instances/{server}/{role}/pitr/settings"): ("set_pitr_days",),
 }
 # the handover of a workspace to a customer's OmniaCLI and the move of an instance to another machine (AD-008 §9
 # step 10, UX-014 A13 and B6): the machine's admin tokens only, never a workspace's (not in WORKSPACE_ROUTES)
@@ -312,6 +317,12 @@ class DefaultDestinationBody(_Model):
 class InstanceDestinationBody(_Model):
     destination: str = Field(description="A destination the instance may use (GET .../destination lists them): its "
                                          "backups go there from the next one; \"\": the server's default")
+
+
+class PitrDaysBody(_Model):
+    days: int = Field(description="The days the recovery at a minute keeps, 1 to 35: any minute of the last days "
+                                  "can be reached. Applied by the next full copy (each night); more days take more "
+                                  "disk, the state says how much")
 
 
 class CentralKeyBody(_Model):

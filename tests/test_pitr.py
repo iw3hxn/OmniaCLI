@@ -80,7 +80,8 @@ def test_switched_on(tmp_path, monkeypatch):
     text = (src / "compose.yaml").read_text()
     assert f"      - {pitrhelper.WAL_LINE}\n" in text and text.index(pitrhelper.WAL_LINE) > text.index("pgdata")
     assert found["enabled"] and len(found["bases"]) == 1
-    assert "archive_mode = 'on'" in docker.sql[0] and f"{pitrhelper.WAL_MOUNT}/archive/%f" in docker.sql[0]
+    on = next(q for q in docker.sql if "archive_mode = 'on'" in (q or ""))
+    assert f"{pitrhelper.WAL_MOUNT}/archive/%f" in on
     # the service made again, then restarted for archive_mode
     assert ("odoo", ("up", "-d", "db")) in docker.calls and ("odoo", ("restart", "db")) in docker.calls
     # again: one line only
@@ -108,7 +109,8 @@ def test_the_bases_kept_and_the_old_segments(tmp_path, monkeypatch):
         os.utime(folder, (time.time() - (20 - day) * 86400,) * 2)
     pitrhelper.base(src)
     kept = sorted(p.name for p in bases.iterdir())
-    assert len(kept) == pitrhelper.KEEP_BASES and "20261101T030000" not in kept
+    # the window of 7 days: the bases in it (the two of today) and the newest one before it, from 7 days back
+    assert len(kept) == 3 and kept[0] == "20261109T030000"
     assert not old.exists()
 
 
@@ -135,7 +137,7 @@ def test_a_cluster_at_a_minute(tmp_path, monkeypatch):
     # the segments read by restore_command, removed once promoted
     assert found["segments"] == 1 and not (pgdata / pitrhelper.RESTORE_WAL).exists()
     auto = (pgdata / "postgresql.auto.conf").read_text()
-    assert f"restore_command = 'cp {pitrhelper.PGDATA_MOUNT}/{pitrhelper.RESTORE_WAL}/%f" in auto
+    assert f"restore_command = '{pitrhelper.restore_command(f'{pitrhelper.PGDATA_MOUNT}/{pitrhelper.RESTORE_WAL}')}'" in auto
     assert any("RESET restore_command" in (q or "") for q in docker.sql)
     assert "recovery_target_time" in auto and "archive_mode = 'off'" in auto and (pgdata / "recovery.signal").exists()
     assert not (dst / "data" / "pgdata.omniacli-before-restore").exists()

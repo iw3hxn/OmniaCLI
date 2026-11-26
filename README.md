@@ -3485,7 +3485,8 @@ secret…** (a secret shown once), **Unsign**, *Jobs that fail or warn* and
 detail, as Slack reads it), `event` (stable: `instance.down`, `instance.up`,
 `instance.restarted`, `instance.restart_failed`, `instance.restart_held`,
 `machine.threshold`, `machine.threshold.cleared`, `certificate.ending`,
-`schedule.failed`, `job.failed`, `job.warned`, `notice.test`, `relay.down`), `level`,
+`schedule.failed`, `job.failed`, `job.warned`, `notice.test`, `relay.down`,
+`pitr.room`), `level`,
 `machine`, `time`, `subject`, `detail` and the event's own fields
 (`instance`, `job`, `metric`, `value`...). Signed, it carries
 `X-OmniaCLI-Signature-256: sha256=<HMAC-SHA256 of the body with its secret,
@@ -3526,8 +3527,28 @@ of its own (`data/wal`, a line in its `compose.yaml`; the service made again:
 a few seconds without database), switches PostgreSQL's WAL archive on
 (`archive_mode`, `archive_command`, `archive_timeout` 300 s: at most 5
 minutes of work not archived yet) and makes a first base backup
-(`pg_basebackup`); one more each night, the newest 7 kept, the segments older
-than the oldest one deleted. **New staging at this minute** makes a staging
+(`pg_basebackup`); one more each night. Each segment is archived compressed
+(`gzip` to a temporary name, synced, renamed; one already there is never
+written over), and `restore_command` reads compressed and whole segments
+alike: an archive of before stays valid, and an instance switched on before
+gets the compressed `archive_command` at its next base backup (reloaded, no
+restart). **Keep the last N days** (1 to 35, 7 when never chosen; `pitr.json`)
+is the window: the base job keeps the bases of those days and the newest one
+before them, so every minute of the N days can be reached, and deletes the
+older bases and the segments before the oldest kept. The page says since when
+it is on, the days and what it takes; when the free room of the disk of the
+archive is less than the days are expected to need (the archive's bytes a day
+over the range it holds, times the days, plus a base a day) a banner says
+so, the base job warns and the monitor tells (`pitr.room`): the window is
+never shortened by itself. **Switch off…** (asked in the page) stops
+archiving at once without a restart (`archive_command = /bin/true`,
+reloaded; `archive_mode` off at the next restart), takes the volume's line
+out of `compose.yaml` (the folder stays: a database still running keeps its
+mount until its container is made again) and deletes the bases and the
+archive; switched on again before a restart, a reload is enough. The same
+from the REST API (`/api/v1/instances/{server}/production/pitr`, `/enable`,
+`/disable`, `/settings`) and MCP (`pitr_status`, `pitr_enable`,
+`pitr_disable`, `set_pitr_days`). **New staging at this minute** makes a staging
 beside it whose cluster is the base backup before that minute with the
 segments after it replayed up to it (`recovery_target_time`), then promoted;
 its database renamed as the staging names it, its roles given the staging's

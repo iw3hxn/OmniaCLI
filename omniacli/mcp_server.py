@@ -85,6 +85,10 @@ set_instance_destination ("" the server's default; a production's with an
 admin token); the machine's default destination (admin token of the machine,
 never a CI's): destinations_status, set_default_destination (its key shown
 once, or key_saved=true when the user kept it).
+The recovery at a minute of a workspace's production: pitr_status (since
+when, the days kept, the minutes reachable, the room on its disk),
+set_pitr_days (1 to 35, admin token), pitr_enable and pitr_disable (admin
+token and confirm=<server name>; off deletes what was kept).
 A machine behind NAT managed from a central panel (admin token): on the
 machine agent_relay_status, agent_relay_publish (its SSH through a relay, one
 of its links) and agent_relay_remove; on the central panel link_relay, the
@@ -134,6 +138,9 @@ TOOL_ROLES = {"update_test": "developer", "backup_test": "developer",
               # where the backups go off site (AD-016 §16.1): an instance's by who sets its backups (a production's
               # admin, checked by the pages' code), the machine's default by its admins
               "instance_destination": "developer", "set_instance_destination": "developer",
+              # the recovery at a minute of a production: read by its developers; changed by its admins only (production
+              # and the pages' code say it, as for a backup)
+              **{t: "developer" for t in ("pitr_status", "set_pitr_days", "pitr_enable", "pitr_disable")},
               "destinations_status": "admin", "set_default_destination": "admin",
               "database_report": "developer", "upload_backup": "admin", "restore_new_instance": "admin",
               # the handover and the move (AD-008 §9 step 10): the machine's admin tokens, never a CI's
@@ -168,7 +175,8 @@ WRITE_TOOLS = {"update_test", "backup_test", "backup", "add_draft_server", "rest
                "agent_relay_publish", "agent_relay_remove", "link_relay", "identity_import", "identity_import_delete",
                "identity_home", "identity_pass", "identity_return", "identity_factor_link", "identity_reconcile",
                "portal_publish",
-               "portal_passkeys", "portal_panel_second_factor", "set_instance_destination", "set_default_destination"}
+               "portal_passkeys", "portal_panel_second_factor", "set_instance_destination", "set_default_destination",
+               "set_pitr_days", "pitr_enable", "pitr_disable"}
 # the tools of the machine's tokens only: a workspace's token never reaches them
 MACHINE_TOOLS = {"read_server", "add_draft_server", "list_links", "linked_tools", "call_linked",
                  "handover_status", "prepare_handover", "receive_workspace", "reception_status", "switch_workspace",
@@ -1453,6 +1461,59 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         need(ctx, "set_instance_destination")
         inst = instance(server_name, role, ctx)
         return await offsite(ctx, "instance", server=inst.server, role=inst.role, destination=destination)
+
+    # --- the recovery at a minute of a workspace's production: the pages' code (app.pitr_act), the same answers
+
+    async def pitr(ctx: Context, tool: str, server_name: str, op: str, confirm: str = "", confirm_needed: bool = True,
+                   wait_seconds: int = 0, **body) -> dict:
+        need(ctx, tool)
+        if api.get("pitr") is None:
+            raise ToolError("This OmniaCLI has no recovery at a minute through MCP")
+        inst = instance(server_name, "production", ctx)
+        if op != "state":
+            production(ctx, tool, inst, confirm, confirm_needed)
+        code, data = await api["pitr"](op, inst.server, as_principal(ctx), "", body, source=source_of(ctx))
+        if code >= 400:
+            raise ToolError(f"{data.get('code') or apiv1.code_of(code)}: {data.get('error') or 'Refused'}")
+        if "job" in data:
+            job = jobs.get(data["job"])
+            await _wait(job, wait_seconds)
+            return job_dict(ctx, job, tail=30)
+        return data
+
+    @server.tool()
+    async def pitr_status(server_name: str, ctx: Context) -> dict:
+        """(developer token) The recovery at a minute of a workspace's
+        production: enabled, since, days (the days kept), first and last (the
+        minutes a staging can be made at, this machine's time), bases (the full
+        copies), size (bytes of the copies and the record of the changes), and
+        room: free, the bytes a day of changes (per_day), what the days are
+        expected to need, fits false when the disk has not the room (free room
+        or keep fewer days: it is never shortened by itself)."""
+        return await pitr(ctx, "pitr_status", server_name, "state")
+
+    @server.tool()
+    async def set_pitr_days(server_name: str, days: int, ctx: Context) -> dict:
+        """(admin token, never a CI's) The days the recovery at a minute of a
+        production keeps, 1 to 35: from the next full copy (each night). More
+        days take more disk: pitr_status says how much."""
+        return await pitr(ctx, "set_pitr_days", server_name, "settings", confirm_needed=False, days=days)
+
+    @server.tool()
+    async def pitr_enable(server_name: str, ctx: Context, confirm: str = "", wait_seconds: int = 0) -> dict:
+        """(admin token and confirm=<server name>, never a CI's) Switch the
+        recovery at a minute of a production on: its database keeps the
+        record of every change, compressed, and a full copy each night. The
+        database restarts once, for a few seconds. A job (get_job)."""
+        return await pitr(ctx, "pitr_enable", server_name, "enable", confirm, wait_seconds=wait_seconds)
+
+    @server.tool()
+    async def pitr_disable(server_name: str, ctx: Context, confirm: str = "", wait_seconds: int = 0) -> dict:
+        """(admin token and confirm=<server name>, never a CI's) Switch the
+        recovery at a minute of a production off, without a restart: nothing
+        more is kept, and the full copies and the record of the changes are
+        deleted (no staging at a past minute any more). A job (get_job)."""
+        return await pitr(ctx, "pitr_disable", server_name, "disable", confirm, wait_seconds=wait_seconds)
 
     @server.tool()
     async def destinations_status(ctx: Context) -> dict:

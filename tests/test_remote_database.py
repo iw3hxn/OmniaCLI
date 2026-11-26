@@ -100,7 +100,10 @@ def test_the_app_tells_a_remote_instance_apart():
     import omniacli.app as appmod
     source = inspect.getsource(appmod)
     assert stacktemplates.REMOTE_DB_SERVICE != stacktemplates.MACHINE_DB_SERVICE
-    assert source.count("if on_remote_db(prod):\n            return refuse(workspacehelper.PITR_ON_REMOTE)") == 3
+    # the base backup and the staging at a minute refuse it in their routes; switching on and off and the days in
+    # the pages' code the REST API and MCP share (pitr_act)
+    assert source.count("if on_remote_db(prod):\n            return refuse(workspacehelper.PITR_ON_REMOTE)") == 2
+    assert source.count("if on_remote_db(prod):\n            return 400, {\"error\": workspacehelper.PITR_ON_REMOTE") == 1
     assert "a staging of it needs a database there" in source
 
 
