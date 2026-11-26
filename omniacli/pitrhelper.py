@@ -124,13 +124,17 @@ def archive_command(folder: str = f"{WAL_MOUNT}/archive") -> str:
     """The segment compressed into a temporary name, synced, then renamed:
     one cut short by a crash is never taken for an archived one. One that
     is there already (archived again after a crash) is fine when it is the
-    same, a failure otherwise: never written over."""
+    same, a failure otherwise: never written over. The folder is synced
+    after the rename (coreutils' sync of a directory, in the postgres and
+    pgvector images): a power cut cannot lose the rename once PostgreSQL
+    was told the segment is archived and may recycle it. A sync that fails
+    is a failure: PostgreSQL archives it again, and finds the same file."""
     target = f"{folder}/%f"
     return (f"if [ -f {target}{COMPRESSED} ]; then "
             f"[ \"$(gzip -dc {target}{COMPRESSED} | md5sum)\" = \"$(md5sum < %p)\" ]; "
             f"elif [ -f {target} ]; then [ \"$(md5sum < {target})\" = \"$(md5sum < %p)\" ]; "
             f"else gzip -c %p > {target}{COMPRESSED}.part && sync {target}{COMPRESSED}.part && "
-            f"mv {target}{COMPRESSED}.part {target}{COMPRESSED}; fi")
+            f"mv {target}{COMPRESSED}.part {target}{COMPRESSED} && sync {folder}; fi")
 
 
 def restore_command(folder: str) -> str:
@@ -235,6 +239,30 @@ def enable(project: Path) -> dict:
     return {**made["state"], "base": made["base"], "restarted": running != "on"}
 
 
+ARCHIVE_SETTINGS = ("archive_mode", "archive_command", "archive_timeout")
+
+
+def _running(project: Path) -> bool:
+    """Whether the database answers: a stopped one is not asked by psql."""
+    return _dc(project, "exec", "-T", DB_SERVICE, "pg_isready", "-h", "127.0.0.1", "-U", "postgres",
+               check=False).returncode == 0
+
+
+def _settings_out(project: Path, names: tuple[str, ...]) -> None:
+    """names taken out of the postgresql.auto.conf of a stopped database, as
+    ALTER SYSTEM RESET would: it starts with their defaults. Written in
+    place, so its owner and mode stay."""
+    auto = project / "data" / "pgdata" / "postgresql.auto.conf"
+    if not auto.is_file():
+        return
+    setting = re.compile(r"\s*(" + "|".join(map(re.escape, names)) + r")\s*=")
+    lines = auto.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = [line for line in lines if not setting.match(line)]
+    if kept != lines:
+        with open(auto, "w", encoding="utf-8") as fh:
+            fh.write("".join(kept))
+
+
 def disable(project: Path) -> dict:
     """Off, without a restart: nothing more is archived from now
     (archive_command = /bin/true, reloaded); archive_mode is off at the
@@ -243,14 +271,20 @@ def disable(project: Path) -> dict:
     database still running keeps the mount until its container is made
     again, and writes nothing there any more, and switching on again before
     that finds the same folder. The bases and the archive are deleted.
-    Refused while a restore reads them."""
+    With the database stopped the settings are taken out of its
+    postgresql.auto.conf instead: it starts with archive_mode off. Refused
+    while a restore reads them."""
     with _lock(project, wait=False) as got:
         if not got:
             raise HelperError("a recovery at a minute is reading the archive now: wait for it to end")
-        _psql(project, f"ALTER SYSTEM SET archive_command = '{OFF_COMMAND}';\n"
-                       "ALTER SYSTEM RESET archive_timeout;\n"
-                       "ALTER SYSTEM RESET archive_mode;\n"
-                       "SELECT pg_reload_conf();\n")
+        running = _running(project)
+        if running:
+            _psql(project, f"ALTER SYSTEM SET archive_command = '{OFF_COMMAND}';\n"
+                           "ALTER SYSTEM RESET archive_timeout;\n"
+                           "ALTER SYSTEM RESET archive_mode;\n"
+                           "SELECT pg_reload_conf();\n")
+        else:
+            _settings_out(project, ARCHIVE_SETTINGS)
         compose_file = project / "compose.yaml"
         text = compose_file.read_text(encoding="utf-8")
         if WAL_LINE in text:
@@ -265,7 +299,7 @@ def disable(project: Path) -> dict:
                         shutil.rmtree(item)
                     else:
                         item.unlink()
-    return {"enabled": False, "freed": freed}
+    return {"enabled": False, "freed": freed, "database": "running" if running else "stopped"}
 
 
 def _bases(project: Path) -> list[tuple[datetime.datetime, Path]]:

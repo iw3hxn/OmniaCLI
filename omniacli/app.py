@@ -8103,6 +8103,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {**found, "days": days, "since": record.get("since") or None,
                 "room": pitrhelper.room(found, days)}
 
+    async def pitr_found_on(server: str, found: dict, record: dict) -> dict:
+        """The record of an instance whose own database archives (found: its pitr-state) and has none, made
+        again: one switched on whose first full copy failed, or whose record a promotion took away, still
+        archives, and the nightly loop (it reads the records) makes its full copies and keeps its days again."""
+        if record or not found.get("enabled") or found.get("machine") or found.get("remote"):
+            return record
+        await asyncio.to_thread(pitr_record, server, enabled=True)
+        _logger.warning("recovery at a minute of %s: on without its record, recorded again", server)
+        return (await asyncio.to_thread(deployhooks.load, pitr_file)).get(server) or {"enabled": True}
+
     async def pitr_act(op: str, server: str, me: Principal, ip: str = "", body: Optional[dict] = None,
                        source: str = "") -> tuple[int, dict]:
         """(status, answer) of op on the recovery at a minute of a workspace's production, as the pages' routes,
@@ -8123,7 +8133,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
             except JobFailed as exc:
                 return 502, {"error": str(exc), "code": "failed"}
-            found = cluster_pitr_view(found, machine_admin(me)) if found.get("machine") else pitr_view(found, record)
+            if found.get("machine"):
+                found = cluster_pitr_view(found, machine_admin(me))
+            else:
+                record = await pitr_found_on(server, found, record)
+                found = pitr_view(found, record)
             # this machine's time: the page tells a range that ended long ago from one that is still growing
             return 200, {**found, "now": datetime.datetime.now().isoformat(timespec="seconds")}
         if on_machine_db(prod):
@@ -8131,13 +8145,23 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if on_remote_db(prod):
             return 400, {"error": workspacehelper.PITR_ON_REMOTE, "code": "refused"}
         who = source or f"manual: {me}"
+        if op in ("settings", "disable"):
+            # on or off is what the instance's database does (pitr-state: its compose.yaml), not the record
+            try:
+                found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
+            except JobFailed as exc:
+                return 502, {"error": str(exc), "code": "failed"}
+            record = await pitr_found_on(server, found, record)
         if op == "settings":
             days = body.get("days")
-            if isinstance(days, bool) or not isinstance(days, (int, str)) or not str(days).strip().isdigit() \
-                    or not pitrhelper.DAYS_RANGE[0] <= int(str(days).strip()) <= pitrhelper.DAYS_RANGE[1]:
+            try:
+                # a whole number, as JSON or as text: not true, not 3.5, not «²» (a digit int() refuses)
+                if isinstance(days, (bool, float)) or not isinstance(days, (int, str)) or not str(days).strip():
+                    raise ValueError(days)
+                days = pitrhelper.days_of(str(days).strip())
+            except (ValueError, workspacehelper.HelperError):
                 return 400, {"error": f"The days kept are a whole number from {pitrhelper.DAYS_RANGE[0]} to "
                                       f"{pitrhelper.DAYS_RANGE[1]}", "code": "refused"}
-            days = int(str(days).strip())
             if not record:
                 return 409, {"error": f"The recovery at a minute of {server} is off: switch it on first",
                              "code": "conflict"}

@@ -259,17 +259,23 @@ async def test_the_page_the_rest_api_and_mcp(workspaces, client, env, monkeypatc
         "last": now.isoformat(timespec="seconds"), "segments": 589, "archive_size": 9 * gb, "size": 9 * gb + (8 << 20),
         "free": gb, "failed": 0}
 
+    # on or off as the instance's database is: what pitr-state answers
+    on = {"now": False}
+
     async def fake_helper(job, *args, timeout=None):
         helper.append(args)
         if args[0] == "pitr-disable":
+            on["now"] = False
             return {"enabled": False, "freed": 9 * gb}
+        if args[0] == "pitr-enable":
+            on["now"] = True
         if args[0] == "pitr-base":
             return {"base": "20261126T030000", "size": 8 << 20, "days": int(args[5]), "upgraded": True,
                     "pruned": {"bases": 1, "segments": 40, "kept": 7}, "state": archive}
         return {"base": "20261126T030000", "restarted": True}
 
     async def ask(*args, timeout=None):
-        return archive
+        return archive if on["now"] else {"enabled": False}
     monkeypatch.setattr(workspaceops, "create_instance", create_instance)
     monkeypatch.setattr(workspaceops, "publish", nothing)
     monkeypatch.setattr(workspaceops, "_helper", fake_helper)
@@ -326,7 +332,7 @@ async def test_the_page_the_rest_api_and_mcp(workspaces, client, env, monkeypatc
     admin = await token(client, "boss", "admin")
     dev = await token(client, "devtok", "developer")
     found = (await client.get(f"{V1}/instances/acme-odoo/production/pitr", headers=dev)).json()
-    assert found.get("days") == 7, found
+    assert found["enabled"] is False, found
     error_of(await client.post(f"{V1}/instances/acme-odoo/production/pitr/enable", headers=admin, json={}), 400,
              "confirm_required")
     error_of(await client.post(f"{V1}/instances/acme-odoo/production/pitr/enable", headers=dev, json={"confirm": "acme-odoo"}),
@@ -334,6 +340,7 @@ async def test_the_page_the_rest_api_and_mcp(workspaces, client, env, monkeypatc
     resp = await client.post(f"{V1}/instances/acme-odoo/production/pitr/enable", headers=admin, json={"confirm": "acme-odoo"})
     assert resp.status_code == 202 and helper[-1][0] == "pitr-enable"
     assert (await wait_job(client, resp.json()["job"]["id"]))["status"] == "success"
+    assert (await client.get(f"{V1}/instances/acme-odoo/production/pitr", headers=dev)).json()["days"] == 7
     error_of(await client.post(f"{V1}/instances/acme-odoo/production/pitr/settings", headers=admin, json={"days": 40}), 400,
              "refused")
     done = (await client.post(f"{V1}/instances/acme-odoo/production/pitr/settings", headers=admin, json={"days": 10})).json()
@@ -343,12 +350,14 @@ async def test_the_page_the_rest_api_and_mcp(workspaces, client, env, monkeypatc
 
     # MCP: the same code again
     found = await call(client, "pitr_status", headers={**HEADERS, **admin}, server_name="acme-odoo")
-    assert found["days"] == 7 and found["room"]["fits"] is False
+    assert found["enabled"] is False
     found = await call(client, "pitr_enable", headers={**HEADERS, **admin}, server_name="acme-odoo")
     assert "confirm" in json.dumps(found)
     found = await call(client, "pitr_enable", headers={**HEADERS, **admin}, server_name="acme-odoo",
                        confirm="acme-odoo", wait_seconds=30)
     assert found["status"] == "success" and record()["since"]
+    found = await call(client, "pitr_status", headers={**HEADERS, **admin}, server_name="acme-odoo")
+    assert found["days"] == 7 and found["room"]["fits"] is False
     found = await call(client, "set_pitr_days", headers={**HEADERS, **admin}, server_name="acme-odoo", days=21)
     assert found["days"] == 21 and record()["days"] == 21
     found = await call(client, "set_pitr_days", headers={**HEADERS, **dev}, server_name="acme-odoo", days=3)
@@ -356,3 +365,67 @@ async def test_the_page_the_rest_api_and_mcp(workspaces, client, env, monkeypatc
     found = await call(client, "pitr_disable", headers={**HEADERS, **admin}, server_name="acme-odoo",
                        confirm="acme-odoo", wait_seconds=30)
     assert found["status"] == "success" and record() is None
+
+    # digits int() refuses: a refusal, never an error of the server
+    resp = await client.post(f"{api}/enable", headers=post_as("mario"))
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    for wrong in ("²", "①", "1²", "", " "):
+        resp = await client.post(f"{api}/settings", headers=post_as("mario"), json={"days": wrong})
+        assert resp.status_code == 400 and "whole number" in resp.json()["error"], wrong
+
+    # on without its record (its first full copy failed after the database archived, or a promotion took the
+    # record away): it is what the database does that counts, and the record is made again for the nightly loop
+    def drop_record():
+        data = json.loads(pitr_file.read_text())
+        data.pop("acme-odoo", None)
+        pitr_file.write_text(json.dumps(data))
+    drop_record()
+    resp = await client.post(f"{api}/settings", headers=post_as("mario"), json={"days": 5})
+    assert resp.status_code == 200, resp.text
+    assert record()["days"] == 5 and record()["enabled"]
+    drop_record()
+    data = (await client.get(api, headers=post_as("mario"))).json()
+    assert data["enabled"] and data["days"] == 7 and record() == {"enabled": True}
+    drop_record()
+    resp = await client.post(f"{api}/disable", headers=post_as("mario"))
+    assert resp.status_code == 200, resp.text
+    assert (await wait_job(client, resp.json()["job"]))["status"] == "success"
+    assert helper[-1][0] == "pitr-disable" and record() is None
+    # off for the database too: nothing to switch off, no days to set, no record made
+    assert (await client.post(f"{api}/disable", headers=post_as("mario"))).status_code == 409
+    assert (await client.post(f"{api}/settings", headers=post_as("mario"), json={"days": 5})).status_code == 409
+    assert record() is None
+
+
+def test_switched_off_with_its_database_stopped(tmp_path, monkeypatch):
+    """A stopped database is not asked by psql: its postgresql.auto.conf loses the archive's settings, so it
+    starts with archive_mode off; the rest as with it running."""
+    docker = Shown(monkeypatch)
+    src = project(tmp_path, "odoo")
+    pitrhelper.enable(src)
+    auto = src / "data" / "pgdata" / "postgresql.auto.conf"
+    auto.write_text("# Do not edit this file manually!\nshared_buffers = '256MB'\narchive_mode = 'on'\n"
+                    f"archive_command = '{pitrhelper.archive_command()}'\narchive_timeout = '300'\n")
+    docker.sql.clear()
+    docker.crash = False
+    real = docker.dc
+
+    def stopped(project, *args, check=True, input=None):
+        if "pg_isready" in args:
+            return type("Done", (), {"returncode": 2, "stdout": "", "stderr": "no response"})
+        if "psql" in args:
+            raise HelperError("the database is not running")
+        return real(project, *args, check=check, input=input)
+    monkeypatch.setattr(pitrhelper, "_dc", stopped)
+    done = pitrhelper.disable(src)
+    assert done["database"] == "stopped" and not docker.sql
+    assert auto.read_text() == "# Do not edit this file manually!\nshared_buffers = '256MB'\n"
+    assert not pitrhelper.enabled(src) and not list((src / "data" / "wal" / "archive").iterdir())
+
+
+def test_the_rename_is_synced_with_its_folder():
+    """After the rename the folder is synced (coreutils' sync of a directory, in both images of the
+    templates), and a failure of that sync is the command's failure."""
+    command = pitrhelper.archive_command("/var/lib/postgresql/wal/archive")
+    assert command.endswith("mv /var/lib/postgresql/wal/archive/%f.gz.part /var/lib/postgresql/wal/archive/%f.gz && "
+                            "sync /var/lib/postgresql/wal/archive; fi")
