@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -74,11 +75,19 @@ def _round(value, digits: int = 1):
     return round(value, digits) if value is not None else None
 
 
+def counted(checks) -> list:
+    """The monitor's checks that count: answered or not; one taken while the instance was stopped on purpose
+    (monitor.STOPPED, answered None) is neither."""
+    return [c for c in checks or () if isinstance(c, (list, tuple)) and len(c) >= 2 and c[1] is not None]
+
+
 def bucket_point(start: int, samples: list[dict], machine: list[dict], checks: list) -> dict | None:
     """The 5-minute point of the span starting at start: the sampler's
     instance points in it (ocpu, omem, dcpu, dmem, conns), the machine's
     (pg: percent of the whole machine, pg_mem) and the monitor's checks
-    ([t, answered, ms]); None: nothing in the span."""
+    ([t, answered, ms]; one taken while it was stopped on purpose, answered
+    None, is not counted); None: nothing in the span, a gap."""
+    checks = counted(checks)
     if not samples and not checks:
         return None
     point = {"t": start, "n": len(samples)}
@@ -225,6 +234,28 @@ class InstanceHistory:
                     self.prune(f"{server.name}/{role.name}", now)
                 except ValueError:
                     continue
+                # a role whose days all went: its folder goes too
+                if not any(role.iterdir()):
+                    role.rmdir()
+                    self._last.pop(f"{server.name}/{role.name}", None)
+            if not any(server.iterdir()):
+                server.rmdir()
+
+    def renamed(self, old: str | None, new: str | None) -> None:
+        """The history follows its server: renamed old → new it moves, deleted (new None) it goes; a server made
+        with a name (old None) never inherits the history of one of before with that name."""
+        with _WRITING:
+            for name in (new, old):
+                if name is not None and not (_SEGMENT.fullmatch(name) and name not in (".", "..")):
+                    raise ValueError(f"not a server: {name!r}")
+            if new is not None:
+                shutil.rmtree(self.root / new, ignore_errors=True)
+            if old is not None and new is not None and (self.root / old).is_dir():
+                os.replace(self.root / old, self.root / new)
+            elif old is not None:
+                shutil.rmtree(self.root / old, ignore_errors=True)
+            for key in [k for k in self._last if k.partition("/")[0] in (old, new)]:
+                self._last.pop(key, None)
 
 
 class InstanceRecorder:
@@ -375,17 +406,20 @@ def verdict(state: dict, live: list[dict], *, cores: float, memory_limit: float 
         if busy and min(busy) >= workers:
             causes.append({"kind": "workers", "workers": workers, "minutes": minutes, "section": "load"})
     causes += [{**c, "section": "database"} for c in database]
-    return {"state": "look" if causes else "good", "since": None, "causes": causes}
+    # checked: the monitor asks it for its login page (up); an instance it never asks (no web port) is not said to
+    # answer
+    return {"state": "look" if causes else "good", "since": None, "causes": causes, "checked": said == "up"}
 
 
-def _shrink(points: list[dict], width: int, keys_mean: tuple, keys_max: tuple) -> list[dict]:
+def _shrink(points: list[dict], width: int, keys_mean: tuple, keys_max: tuple, origin: int = 0) -> list[dict]:
     """Points grouped by spans of width seconds: the mean of keys_mean and
     the maximum of keys_max."""
     if width <= 0:
         return points
     groups: dict[int, list[dict]] = {}
     for p in points:
-        groups.setdefault(p["t"] // width * width, []).append(p)
+        # spans counted from the start of the period (origin): never more than MAX_POINTS of them
+        groups.setdefault(origin + min((p["t"] - origin) // width, MAX_POINTS - 1) * width, []).append(p)
     found = []
     for start in sorted(groups):
         group = groups[start]
@@ -465,7 +499,7 @@ def series(history: list[dict], live: list[dict], machine: list[dict], period: s
         interval = INTERVAL if live else BUCKET
     if len(found) > MAX_POINTS:
         width = max(-(-int(seconds) // MAX_POINTS), interval)
-        found = _shrink(found, width, MEANS, MAXES)
+        found = _shrink(found, width, MEANS, MAXES, int(since))
         interval = width
     return found, interval
 
@@ -474,9 +508,11 @@ def tiles(state_checks: list, history: list[dict], period: str, points: list[dic
           now: float) -> dict:
     """The four tiles over the period: answered (percent of the checks),
     the response time and the failed requests (from Odoo's log: slice 2,
-    None with the reason), the memory (its maximum against what is
-    granted)."""
+    None with the reason), the memory of Odoo and its own database (now,
+    as the chart's last point, and its maximum in the period; the limit is
+    the workspace's, for all its instances)."""
     since = now - PERIODS[period]
+    state_checks = counted(state_checks)
     if period in ("1h", "24h"):
         checks = [c for c in state_checks if c[0] >= since]
         asked, answered = len(checks), sum(1 for c in checks if c[1])
@@ -491,13 +527,17 @@ def tiles(state_checks: list, history: list[dict], period: str, points: list[dic
                    p.get("db_mem_max") if p.get("db_mem_max") is not None else p.get("db_mem")) for p in points]
     memory = [m for m in memory if m is not None]
     top = max(memory) if memory else None
+    # the memory now: the chart's last point, Odoo and its own database as the chart draws them (a database shared
+    # with the machine's other databases is not its own: not counted)
+    latest = next((_sum(p.get("odoo_mem"), p.get("db_mem")) for p in reversed(points)
+                   if p.get("odoo_mem") is not None), None)
     return {
         "answered": {"value": round(100.0 * answered / asked, 1) if asked else None, "checks": asked,
                      "failed": asked - answered},
         "response": {"value": None, "reason": FROM_LOG},
         "failed": {"value": None, "reason": FROM_LOG},
-        "memory": {"value": _round(top), "limit": memory_limit,
-                   "percent": round(top * 100 / memory_limit) if top is not None and memory_limit else None},
+        "memory": {"value": _round(latest), "max": _round(top), "limit": memory_limit,
+                   "percent": round(latest * 100 / memory_limit) if latest is not None and memory_limit else None},
     }
 
 
@@ -506,7 +546,7 @@ def past(state_checks: list, history: list[dict], period: str, now: float) -> li
     the checks without an answer (minutes, the first one's time)."""
     since = now - PERIODS[period]
     if period in ("1h", "24h"):
-        failed = [c[0] for c in state_checks if c[0] >= since and not c[1]]
+        failed = [c[0] for c in counted(state_checks) if c[0] >= since and not c[1]]
         return [{"kind": "down", "minutes": len(failed), "at": min(failed)}] if failed else []
     found = sorted((p for p in history if p["t"] >= since and p.get("ck") and (p.get("up") or 0) < p["ck"]),
                    key=lambda p: p["t"])
@@ -550,7 +590,7 @@ def build(instance, period: str, *, sampler, history: InstanceHistory, state: di
     return {
         "instance": key, "period": period, "periods": list(PERIODS), "now": int(now), "interval": interval,
         "since": started, "measured_from": started if started and started > since else None,
-        "verdict": found, "past": past(checks, kept, period, now) if found["state"] not in ("down", "none") else [],
+        "verdict": found, "past": past(checks, kept, period, now) if found["state"] not in ("down", "stopped", "none") else [],
         "tiles": tiles(checks, kept, period, points, memory_limit, now),
         "load": {"points": points, "cores": cores, "memory_limit": memory_limit,
                  "cpu_threshold": thresholds["cpu"][0], "memory_threshold": thresholds["ram"][0],

@@ -335,6 +335,10 @@ class Sampler:
             for r in running:
                 self._services[str(r["ID"])] = str(r.get("Service") or "")
         self._containers[instance.key] = (time.monotonic(), ids)
+        # the services of containers no instance runs any more go (a container made again has a new id)
+        alive = {i for _, found in self._containers.values() for i in found}
+        for gone in [i for i in self._services if i not in alive]:
+            del self._services[gone]
         return ids
 
     async def _unit_cgroup(self, instance: Instance) -> str | None:
@@ -503,6 +507,7 @@ class Sampler:
                 self._prev.pop(key, None)
                 self._prev.pop(key + "#o", None)
                 self._prev.pop(key + "#d", None)
+                self._containers.pop(key, None)
                 self.source.pop(key, None)
 
     async def connections(self) -> dict[int, int] | None:

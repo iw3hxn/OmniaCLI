@@ -169,7 +169,7 @@ def _live(seconds, **values):
 def test_the_verdict_on_now():
     kw = dict(cores=2, memory_limit=4096, workers=4, thresholds=THRESHOLDS, minutes=5, database=[], now=NOW)
     calm = _live(900, ocpu=20.0, dcpu=5.0, omem=1000.0, dmem=200.0, conns=1)
-    assert im.verdict({"state": "up"}, calm, **kw) == {"state": "good", "since": None, "causes": []}
+    assert im.verdict({"state": "up"}, calm, **kw) == {"state": "good", "since": None, "causes": [], "checked": True}
     assert im.verdict({"state": "stopped", "since": "2026-11-26T09:40:00"}, calm, **kw)["state"] == "stopped"
     assert im.verdict({"state": "down", "since": "2026-11-26T10:12:00"}, calm, **kw)["since"] == "2026-11-26T10:12:00"
     assert im.verdict({"state": "unknown"}, [], **kw)["state"] == "none"
@@ -224,7 +224,8 @@ def test_the_tiles_and_the_past():
     assert found["answered"] == {"value": round(100 * 197 / 199, 1), "checks": 199, "failed": 2}
     # the requests come from Odoo's log in slice 2: never a 0 meanwhile
     assert found["response"] == {"value": None, "reason": im.FROM_LOG} and found["failed"]["value"] is None
-    assert found["memory"] == {"value": 1450.0, "limit": 4096, "percent": 35}
+    # the memory now as the chart's last point (Odoo and its database), with the most of the period beside it
+    assert found["memory"] == {"value": 1200.0, "max": 1450.0, "limit": 4096, "percent": 29}
     assert im.past(checks, [], "24h", NOW) == [{"kind": "down", "minutes": 2, "at": NOW - 660}]
     # 7 days: from the history's checks
     history = [{"t": NOW - 3000, "ck": 5, "up": 3}, {"t": NOW - 2700, "ck": 5, "up": 5}]
@@ -365,3 +366,153 @@ def test_a_database_on_another_machine(tmp_path):
     customer = im.build(inst, "1h", customer=True, **args)
     assert customer["load"]["database"] == {"where": "remote"} and "db.example.net" not in json.dumps(customer)
     assert all("db_cpu" not in p and "cluster_cpu" not in p for p in customer["load"]["points"])
+
+
+# --- the review of monitor-s1 (26/11/2026) -----------------------------------------------------------------------
+
+async def test_an_instance_stopped_on_purpose_is_not_a_fall(env, tmp_path, monkeypatch):
+    """A check taken while the instance is stopped on purpose is neither an answer nor a fall (monitor.STOPPED):
+    the 3 checks before the service said so, and every one after; and one found stopped while it was down."""
+    import httpx
+
+    from omniacli import monitor as monitor_module
+
+    states = {"srv/production": "stopped"}
+
+    async def run_state(inst):
+        return states[inst.key]
+    monkeypatch.setattr(type(env["settings"].servers["srv"].production.plugin), "web_port", lambda self, inst: 8069)
+    jobs = type("J", (), {"is_busy": lambda self, key: False})()
+    mon = monitor_module.Monitor(env["settings"], jobs, run_state, tmp_path / "monitor.json")
+    inst = env["settings"].servers["srv"].production
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(502))) as client:
+        for _ in range(5):
+            await mon.check_instance(client, inst)
+        checks = mon.instances[inst.key]["checks"]
+        assert mon.view(inst.key)["state"] == "stopped" and [c[1] for c in checks] == [None] * 5
+        assert mon.view(inst.key)["uptime_24h"] is None and mon.view(inst.key)["checks_24h"] == 0
+        # down for real (its service runs), then stopped: from then on not a fall
+        mon.instances[inst.key] = {"state": "down", "since": "x", "fails": 9, "checks": []}
+        states[inst.key] = "running"
+        await mon.check_instance(client, inst)
+        states[inst.key] = "stopped"
+        await mon.check_instance(client, inst)
+    entry = mon.instances[inst.key]
+    assert entry["state"] == "stopped" and [c[1] for c in entry["checks"]] == [False, None]
+
+
+def test_the_checks_of_a_stopped_instance_count_nowhere(tmp_path):
+    """Stopped 2 hours: «Answers» counts the checks it could answer only, nothing «did not answer», the 5-minute
+    points of those hours are a gap; after its start it is well without a line on the past."""
+    stopped = [[NOW - 7200 + 60 * m, None, None] for m in range(120)]
+    answered = [[NOW - 600 + 60 * m, True, 20] for m in range(10)]
+    checks = stopped + answered
+    assert im.tiles(checks, [], "24h", [], None, NOW)["answered"] == {"value": 100.0, "checks": 10, "failed": 0}
+    assert im.past(checks, [], "24h", NOW) == []
+    assert im.bucket_point(NOW - 7200, [], [], stopped[:5]) is None
+    sampler = _Sampler()
+    recorder = InstanceRecorder(sampler, InstanceHistory(tmp_path), checks=lambda k: checks, measured=lambda k: True)
+    sampler.history["s/production"] = deque()
+    recorder.check(now=NOW + 10)
+    kept = recorder.history.points("s/production")
+    assert kept and all(p["t"] >= NOW - 600 for p in kept)
+    # a period with no check counted: no percent, «Misurato dal» says where the history starts
+    assert im.tiles(stopped, [], "24h", [], None, NOW)["answered"]["value"] is None
+    args = dict(sampler=sampler, history=recorder.history, checks=checks, thresholds=THRESHOLDS, minutes=5, cores=2,
+                memory_limit=None, workers=0, database=[], where="service", host=None, workspace=None, customer=False,
+                now=NOW)
+    view = im.build(_Instance("s/production"), "24h", state={"state": "up"}, **args)
+    assert view["past"] == [] and view["measured_from"] == NOW - 600
+    # while stopped no line on the past either
+    assert im.build(_Instance("s/production"), "24h", state={"state": "stopped"}, **args)["past"] == []
+
+
+def test_an_instance_the_monitor_never_asks_is_not_said_to_answer():
+    """No web port, never checked (state unknown): the verdict is not «it answers»."""
+    kw = dict(cores=2, memory_limit=None, workers=0, thresholds=THRESHOLDS, minutes=5, database=[], now=NOW)
+    calm = _live(900, ocpu=5.0, omem=100.0)
+    found = im.verdict({"state": "unknown"}, calm, **kw)
+    assert found["state"] == "good" and found["checked"] is False
+    assert im.verdict({"state": "up"}, calm, **kw)["checked"] is True
+    page = (Path(im.__file__).parent / "templates" / "server.html").read_text(encoding="utf-8")
+    assert "v.checked ? M.goodFacts : M.goodUnchecked" in page
+
+
+def test_the_history_follows_its_servers_name(tmp_path):
+    history = InstanceHistory(tmp_path)
+    history.add("acme-odoo/production", [{"t": NOW, "oc": 1}], now=NOW)
+    history.add("old/production", [{"t": NOW, "oc": 2}], now=NOW)
+    assert history.last("old/production") == NOW
+    # renamed: it moves, what the new name had before goes
+    history.renamed("acme-odoo", "old")
+    assert [p["oc"] for p in history.points("old/production")] == [1] and not (tmp_path / "acme-odoo").exists()
+    # deleted: it goes, and its last time with it
+    history.renamed("old", None)
+    assert not (tmp_path / "old").exists() and history.last("old/production") is None
+    # a server made with a name of before in another workspace starts with nothing
+    history.add("beta-shop/production", [{"t": NOW, "oc": 3}], now=NOW)
+    history.renamed(None, "beta-shop")
+    assert history.points("beta-shop/production") == [] and history.last("beta-shop/production") is None
+    with pytest.raises(ValueError):
+        history.renamed("..", None)
+    # the days that went take their empty folders with them
+    history.add("gone/production", [{"t": NOW, "oc": 4}], now=NOW)
+    history.prune_all(now=NOW + 20 * 86400)
+    assert not (tmp_path / "gone").exists()
+
+
+async def test_a_deleted_server_takes_its_monitor_with_it(client, env):  # noqa: F811
+    from .test_app import POST
+
+    app = client.app
+    app.state.instance_history.add("srv/production", [{"t": NOW, "oc": 1}], now=time.time())
+    app.state.monitor.instances["srv/production"] = {"state": "up", "checks": [[NOW, True, 5]]}
+    folder = app.state.instance_history.root / "srv"
+    assert folder.is_dir()
+    resp = await client.post("/api/servers/delete", headers=POST, json={"name": "srv"})
+    assert resp.status_code == 200, resp.text
+    assert not folder.exists() and "srv/production" not in app.state.monitor.instances
+
+
+def test_the_period_never_has_more_than_300_points():
+    """7 and 14 days: the groups counted from the period's start, never 301 of them."""
+    for period, seconds in (("7d", 7 * 86400), ("14d", 14 * 86400)):
+        now = NOW + 137  # not on a 5-minute edge
+        history = [{"t": (now - seconds) // 300 * 300 + i * 300, "oc": 1.0} for i in range(seconds // 300 + 2)]
+        points, _ = im.series(history, [], [], period, 1, 1, now)
+        assert len(points) <= im.MAX_POINTS, (period, len(points))
+
+
+def test_a_period_chosen_while_a_read_is_in_flight_is_not_lost():
+    page = (Path(im.__file__).parent / "templates" / "server.html").read_text(encoding="utf-8")
+    script = page[page.index('const KEY = "omniacli.instance.period"'):]
+    script = script[:script.index("</script>")]
+    assert "if (busy || box.hidden) return;" not in script
+    assert "new AbortController()" in script and "signal: asked.signal" in script
+
+
+def test_the_memory_tile_and_the_chart_say_the_same():
+    """The tile is the chart's last point (Odoo and its own database) and says the limit is the whole
+    workspace's."""
+    points = [{"t": NOW - 600, "odoo_mem": 90.0, "db_mem": 3.0}, {"t": NOW - 300, "odoo_mem": 18.0, "db_mem": 2.0}]
+    found = im.tiles([], [], "24h", points, 512, NOW)["memory"]
+    assert found == {"value": 20.0, "max": 93.0, "limit": 512, "percent": 4}
+    page = (Path(im.__file__).parent / "templates" / "server.html").read_text(encoding="utf-8")
+    assert "the workspace has {limit} for all its instances" in page
+
+
+def test_the_services_of_containers_gone_are_forgotten():
+    sampler = metrics.Sampler.__new__(metrics.Sampler)
+    sampler._containers = {"a/production": (0.0, ["new1"])}
+    sampler._services = {"old1": "odoo", "new1": "odoo"}
+
+    async def capture(cmd, timeout=None):
+        return 0, json.dumps({"ID": "new2", "State": "running", "Service": "odoo"})
+    import asyncio
+    from unittest.mock import patch
+
+    inst = _Instance("a/production")
+    inst.restart.command = lambda *a: ["state"]
+    with patch.object(metrics.ops, "capture", capture):
+        asyncio.run(sampler._container_ids(inst))
+    assert sampler._services == {"new2": "odoo"}

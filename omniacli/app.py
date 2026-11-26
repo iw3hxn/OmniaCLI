@@ -5375,6 +5375,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if old == new:
             return None
         await offsite_renamed(old, new)
+        monitor_renamed(old, new)
         async with workspaces_lock:
             changed = {}
             for ws in settings.workspaces.values():
@@ -5386,6 +5387,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if changed == settings.workspaces:
                 return None
             return await store_workspaces(changed)
+
+    def monitor_renamed(old: str | None, new: str | None) -> None:
+        """An instance's monitor follows its server's name (AD-019): its 14 days of history and the monitor's checks
+        move with a rename, go with a delete, and a server made with a name of before starts with none of them."""
+        try:
+            instance_history.renamed(old, new)
+        except (OSError, ValueError) as exc:
+            _logger.warning("The monitor's history of %s did not follow it to %s: %s", old, new, exc)
+        moved = {}
+        for key in [k for k in monitor.instances if k.partition("/")[0] in (old, new)]:
+            entry = monitor.instances.pop(key)
+            if old is not None and new is not None and key.partition("/")[0] == old:
+                moved[f"{new}/{key.partition('/')[2]}"] = entry
+        monitor.instances.update(moved)
 
     async def offsite_renamed(old: str | None, new: str | None) -> None:
         """Where the backups of a server go follows its name (AD-016 §16.1): renamed, its choices are the new name's;

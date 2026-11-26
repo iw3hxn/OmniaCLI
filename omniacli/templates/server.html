@@ -694,7 +694,7 @@ dialog.sd { --dialog-w: 560px; }
     <div class="tile" data-mon-tile="answered" title="{{ _('The share of the checks of the monitor, one a minute, its login page answered') }}"><div class="tile-label">{{ _("Answers") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
     <div class="tile" data-mon-tile="response" title="{{ _('How long its pages take, read from the log of Odoo') }}"><div class="tile-label">{{ _("Response time") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
     <div class="tile" data-mon-tile="failed" title="{{ _('The requests that ended with an error, read from the log of Odoo') }}"><div class="tile-label">{{ _("Failed requests") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
-    <div class="tile" data-mon-tile="memory" title="{{ _('The memory of Odoo and of its database together, the most of the period') }}"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
+    <div class="tile" data-mon-tile="memory" title="{{ _('The memory of Odoo and of its own database together now, as the last point of the chart; the limit is the whole workspace’s, its production and its stagings together') }}"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
   </div>
   <details class="mon-section" data-mon="load">
     <summary title="{{ _('The processor and the memory of Odoo and of its database over the period') }}"><span class="mon-title">{{ _("Load") }}</span> <span class="muted mon-line" data-mon-line="load"></span></summary>
@@ -1409,6 +1409,7 @@ dialog.sd { --dialog-w: 560px; }
     good: {{ _("Is well") | tojson }}, look: {{ _("To look at") | tojson }}, down: {{ _("Does not answer") | tojson }},
     stopped: {{ _("Stopped") | tojson }}, none: {{ _("No measure yet") | tojson }},
     goodFacts: {{ _("in the last minutes: it answers, nothing above its thresholds") | tojson }},
+    goodUnchecked: {{ _("in the last minutes nothing above its thresholds; whether it answers is not checked: it has no web port") | tojson }},
     downFacts: {{ _("since {time}: three checks in a row without an answer while its service runs") | tojson }},
     stoppedFacts: {{ _("Stopped on {time}: it is not measured") | tojson }},
     noneFacts: {{ _("the monitor starts within a minute, the chart of the 24 hours fills from here") | tojson }},
@@ -1448,8 +1449,8 @@ dialog.sd { --dialog-w: 560px; }
     answeredNone: {{ _("no check {period}") | tojson }},
     responseSub: {{ _("not measured yet: it is read from the log of Odoo; above 1 s it is felt") | tojson }},
     failedSub: {{ _("not measured yet: it is read from the log of Odoo; above 1% it is to look at") | tojson }},
-    memorySub: {{ _("at most, of {limit} granted; above {threshold}% it is to look at") | tojson }},
-    memoryNoLimit: {{ _("the most of the period; no limit granted") | tojson }},
+    memorySub: {{ _("now, Odoo and its database; at most {max} {period}; the workspace has {limit} for all its instances, above {threshold}% it is to look at") | tojson }},
+    memoryNoLimit: {{ _("now, Odoo and its database; at most {max} {period}") | tojson }},
     memoryNone: {{ _("not measured {period}") | tojson }},
     loadLine: {{ _("Processor at most {cpu}%, memory at most {mem}") | tojson }},
     loadNone: {{ _("nothing measured in this period") | tojson }},
@@ -1507,7 +1508,7 @@ dialog.sd { --dialog-w: 560px; }
     const v = data.verdict, verdict = box.querySelector(".mon-verdict");
     verdict.className = "mon-verdict " + ({good: "good", look: "look", down: "down"}[v.state] || "");
     box.querySelector(".mon-word").textContent = M[v.state] || v.state;
-    box.querySelector(".mon-facts").textContent = v.state === "good" ? "· " + M.goodFacts
+    box.querySelector(".mon-facts").textContent = v.state === "good" ? "· " + (v.checked ? M.goodFacts : M.goodUnchecked)
       : v.state === "down" ? "· " + fill(M.downFacts, {time: whenText(v.since)})
       : v.state === "stopped" ? "· " + fill(M.stoppedFacts, {time: v.since ? whenText(v.since) : "?"})
       : v.state === "none" ? "· " + M.noneFacts : "";
@@ -1555,8 +1556,9 @@ dialog.sd { --dialog-w: 560px; }
     tile("response", "—", M.responseSub);
     tile("failed", "—", M.failedSub);
     const m = t.memory;
-    tile("memory", m.value === null ? "—" : mib(m.value), m.value === null ? fill(M.memoryNone, {period: when})
-      : m.limit ? fill(M.memorySub, {limit: mib(m.limit), threshold: data.load.memory_threshold}) : M.memoryNoLimit);
+    tile("memory", m.value === null || m.value === undefined ? "—" : mib(m.value), m.value === null ? fill(M.memoryNone, {period: when})
+      : fill(m.limit ? M.memorySub : M.memoryNoLimit, {max: mib(m.max ?? m.value), period: when, limit: mib(m.limit || 0),
+                                                        threshold: data.load.memory_threshold}));
   }
 
   function drawLoad(data) {
@@ -1608,15 +1610,18 @@ dialog.sd { --dialog-w: 560px; }
     const cpuMax = Math.max(-1, ...points.map((p) => p.odoo_cpu_max ?? p.odoo_cpu ?? -1));
     const memMax = Math.max(-1, ...points.map((p) => (p.odoo_mem_max ?? p.odoo_mem ?? 0) + (p.db_mem_max ?? p.db_mem ?? 0)));
     box.querySelector('[data-mon-line="load"]').textContent = cpuMax < 0 ? M.loadNone
-      : fill(M.loadLine, {cpu: num(cpuMax, 0), mem: mib(memMax)});
+      : fill(M.loadLine, {cpu: num(cpuMax, 0), mem: mib(data.tiles.memory.max ?? memMax)});
   }
 
   async function load() {
-    if (busy || box.hidden) return;
-    busy = true;
+    if (box.hidden) return;
+    // a read in flight (the first can take seconds: its database's statistics) gives way to the new one, a
+    // period chosen meanwhile is never lost nor drawn over by the older answer
+    if (busy) busy.abort();
+    const asked = busy = new AbortController();
     const note = box.querySelector(".mon-note");
     try {
-      const resp = await fetch(`${box.dataset.api}?period=${period}`, {headers: {Accept: "application/json"}});
+      const resp = await fetch(`${box.dataset.api}?period=${period}`, {headers: {Accept: "application/json"}, signal: asked.signal});
       if (resp.status === 404) {
         // a linked machine of a release before the monitor (the central panel draws this page): it has no route
         box.querySelector(".mon-word").textContent = M.none;
@@ -1632,9 +1637,11 @@ dialog.sd { --dialog-w: 560px; }
       note.textContent = data.measured_from ? fill(M.measuredFrom, {time: whenText(new Date(data.measured_from * 1000))}) : "";
       note.hidden = !note.textContent;
     } catch (e) {
+      if (asked.signal.aborted) return;
       note.textContent = fill(M.failed, {error: e.message}); note.hidden = false;
     } finally {
-      busy = false;
+      if (busy !== asked) return;  // a newer read keeps the timer
+      busy = null;
       clearTimeout(timer);
       timer = setTimeout(tick, period === "1h" ? 5000 : 60000);
     }

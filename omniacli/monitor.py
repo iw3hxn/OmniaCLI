@@ -51,6 +51,9 @@ EVERY = 60
 DOWN_AFTER = 3
 TIMEOUT = 15
 KEEP = 24 * 60  # checks kept per instance: a day
+# the answer of a check taken while the instance is stopped on purpose: [t, None, ms], counted neither as an answer
+# nor as a fall (the instance's monitor, AD-019)
+STOPPED = None
 DISK_EVERY = 300
 CERT_EVERY = 24 * 3600
 CERT_DAYS = 14
@@ -114,7 +117,8 @@ class Monitor:
         automatic restart."""
         found = self.instances.get(key) or {}
         checks = found.get("checks") or []
-        day = [c for c in checks if c[0] >= time.time() - 86400]
+        # a check taken while it was stopped on purpose (STOPPED) is neither an answer nor a fall
+        day = [c for c in checks if c[0] >= time.time() - 86400 and c[1] is not STOPPED]
         up = [c for c in day if c[1]]
         return {"state": found.get("state", "unknown"), "since": found.get("since"),
                 "uptime_24h": round(100.0 * len(up) / len(day), 2) if day else None,
@@ -198,13 +202,25 @@ class Monitor:
             return
         entry["fails"] = entry.get("fails", 0) + 1
         if entry.get("state") == "stopped":
+            entry["checks"][-1][1] = STOPPED
             return
-        if entry.get("state") != "down":
+        if entry.get("state") == "down":
+            # down, then stopped on purpose (or found stopped after OmniaCLI was away): stopped from now, not
+            # a fall that lasts
+            if await self.run_state(inst) == "stopped":
+                entry.update(state="stopped", since=stamp)
+                entry["checks"][-1][1] = STOPPED
+                return
+        else:
             if entry["fails"] < DOWN_AFTER:
                 return
             state = await self.run_state(inst)
             if state == "stopped":
+                # the checks of this run without an answer were of an instance stopped on purpose
                 entry.update(state="stopped", since=stamp)
+                for check in entry["checks"][-entry["fails"]:]:
+                    if not check[1]:
+                        check[1] = STOPPED
                 return
             entry.update(state="down", since=stamp)
             await self.tell(inst.server, f"{inst.key} is down",
