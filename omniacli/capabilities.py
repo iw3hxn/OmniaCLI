@@ -203,6 +203,9 @@ ROUTES = {
         ("GET", "/api/servers/{server}/{role}/restore/room"),
         ("POST", "/api/servers/{server}/{role}/backups/verify"), ("POST", "/api/servers/{server}/{role}/archive"),
         ("GET", "/api/servers/{server}/{role}/backup-schedule"), ("POST", "/api/servers/{server}/{role}/backup-schedule"),
+        # where its backups go off site (AD-016 §16.1), on the page, the REST API and MCP
+        ("POST", "/api/servers/{server}/{role}/backup-destination"),
+        ("GET", "/api/v1/instances/{server}/{role}/destination"), ("POST", "/api/v1/instances/{server}/{role}/destination"),
         ("POST", "/api/servers/{server}/{role}/backups/delete"), ("GET", "/api/servers/{server}/{role}/remote-backups"),
         ("POST", "/api/servers/{server}/{role}/remote-backups/fetch"), ("GET", "/api/servers/{server}/pitr"),
         ("POST", "/api/servers/{server}/pitr/enable"), ("POST", "/api/servers/{server}/pitr/base"),
@@ -272,6 +275,7 @@ TOOLS = {"read_log": "logs", "database_report": "logs",
          "restart_instance": "run", "start_instance": "run", "stop_instance": "run", "stop_job": "run",
          "update_test": "code", "update_production": "code", "list_deploys": "code", "deploy_back": "code",
          "backup_test": "backup", "backup": "backup", "verify_backup": "backup", "full_archive": "backup",
+         "instance_destination": "backup", "set_instance_destination": "backup",
          "create_staging": "stagings",
          "upload_backup": "restore", "restore_new_instance": "restore"}
 

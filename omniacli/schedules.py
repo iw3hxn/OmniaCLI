@@ -9,6 +9,7 @@ last runs of each in a history file next to the jobs."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime
 import json
 import logging
@@ -287,6 +288,71 @@ def save_schedules(path: Path, schedules: dict[str, Schedule]) -> None:
     os.replace(tmp, path)
 
 
+# --- the destination of the backups moves from the backup step to the instance (AD-016 §16.1, slice 1) ------------
+
+def _backup_steps_first(schedules: dict[str, Schedule]) -> list[Schedule]:
+    """The schedules with a backup step, an instance's automatic backups (backup.<server>.<role>) before the others."""
+    def own(sch: Schedule) -> bool:
+        return sch.name == "backup." + sch.instance.replace("/", ".")
+    return sorted((s for s in schedules.values() if s.backup is not None), key=lambda s: (not own(s), s.name))
+
+
+def migrate_offsite(settings, schedules: dict[str, Schedule]) -> list[str]:
+    """At the first start of this release: every destination of a backup step becomes its instance's choice in
+    destinations.yaml (the automatic backups' first, then the other schedules'), since now; the instances moved.
+    Done once (destinations.Choices.migrated): from then the backup step holds what mirror_offsite writes there, the
+    effective destination, and reading it back as a choice would pin the instances that follow the default."""
+    path = settings.destinations_file
+    if path is None:
+        return []
+    choices = destinations.load_choices(path)
+    if choices.migrated:
+        return []
+    moved = []
+    staging = destinations.staging_servers(settings)
+    for sch in _backup_steps_first(schedules):
+        # a test's or a staging's has no copy (D-N3), an instance not here none either: no choice nobody could take
+        # back, that would keep its destination from being deleted
+        server, _, role = sch.instance.partition("/")
+        if role != "production" or server in staging or settings.instance(server, role) is None:
+            continue
+        if sch.backup.destination and sch.instance not in choices.instances:
+            choices.instances[sch.instance] = {"destination": sch.backup.destination, "since": destinations.now()}
+            moved.append(sch.instance)
+    if not moved and not path.exists():
+        # nothing to carry and no file: the first choice made writes the mark (destinations.save_choices)
+        return []
+    destinations.save_choices(path, choices)
+    return moved
+
+
+def mirror_offsite(settings, schedules: dict[str, Schedule]) -> dict[str, Schedule] | None:
+    """The schedules with each backup step's destination the effective one of its instance (none for a test or a
+    staging), or None when every one says it already. Until slice 8 + 14 days (AD-016 §9): the release before this one
+    reads only that, so going back to it copies where this one copies."""
+    try:
+        found = destinations.load_destinations(settings.destinations_file) if settings.destinations_file else {}
+    except ConfigError:
+        return None
+    choices = destinations.load_choices(settings.destinations_file)
+    staging = destinations.staging_servers(settings)
+    updated, changed = dict(schedules), False
+    for name, sch in schedules.items():
+        if sch.backup is None:
+            continue
+        server, _, role = sch.instance.partition("/")
+        srv = settings.servers.get(server)
+        instance = srv.instances.get(role) if srv is not None else None
+        if instance is None or instance.key != sch.instance:
+            # not (or not yet) an instance of this machine by that name: its step stays as it is
+            continue
+        name_now = destinations.effective(settings, instance, found, choices, staging).name
+        if name_now != sch.backup.destination:
+            updated[name] = dataclasses.replace(sch, backup=dataclasses.replace(sch.backup, destination=name_now))
+            changed = True
+    return updated if changed else None
+
+
 def list_scripts(folder: Path) -> list[str]:
     """The .py files directly in the scripts folder."""
     try:
@@ -546,28 +612,26 @@ class Scheduler:
                         else "--- not notified: " + "; ".join(problems))
             raise
 
-    def destination(self, name: str, instance) -> destinations.Destination:
-        """The remote destination a backup step names, if the instance may use
-        it: the machine's, or one of the workspace the instance is in."""
-        found = destinations.load_destinations(self.settings.destinations_file).get(name)
-        if found is None:
-            raise JobFailed(f"no destination {name}: the backups stay here only")
-        if found.workspace and instance.server not in getattr(self.settings.workspaces.get(found.workspace),
-                                                              "servers", []):
-            raise JobFailed(f"destination {name} is of workspace {found.workspace}, not of {instance.server}'s")
-        return found
-
     async def run(self, job: Job, schedule: Schedule, instance) -> None:
         folder = self.settings.backup_dir / instance.server / instance.role
         if schedule.backup:
             made = await scheduled_backup(job, instance, folder, schedule.backup)
             step = schedule.backup
-            if step.destination:
-                dest = self.destination(step.destination, instance)
+            # the instance's destination (AD-016 §16.1), not the one the step names: that one is the release
+            # before's (mirror_offsite)
+            found = destinations.effective(self.settings, instance)
+            dest = found.destination
+            if found.why == destinations.FROM_NONE:
+                # (the name it chose is not said: one of the machine's would reach a workspace's people)
+                job.log(f"--- no off-site copy: {instance.key} has no destination"
+                        + (" it may use" if found.chosen else "") + " and this machine has no default one")
+            if dest is not None:
                 where = destinations.instance_folder(instance)
-                await destinations.upload(job, dest, made, where)
+                said = destinations.said_to(self.settings, instance, dest)
+                await destinations.upload(job, dest, made, where, said)
                 await destinations.rotate(job, dest, where, SCHEDULED_PREFIX,
-                                          lambda times: rotation_kept(times, step.daily, step.weekly, step.monthly))
+                                          lambda times: rotation_kept(times, step.daily, step.weekly, step.monthly),
+                                          said=said)
             if step.verify_weekday is not None and datetime.date.today().weekday() == step.verify_weekday \
                     and instance.plugin.has_verify:
                 await backupcheck.verify(job, instance, made)

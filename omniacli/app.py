@@ -453,6 +453,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/workspaces/{workspace}/git-key", "/api/workspaces/{workspace}/repositories/branches",
     "/api/workspaces/{workspace}/repositories/update",
     "/api/servers/{server}/{role}/backup-schedule", "/api/servers/{server}/{role}/backups/delete",
+    # «Off-site copy to» of its Backups tab (AD-016 §16.1): the default or a destination of the workspace
+    "/api/servers/{server}/{role}/backup-destination",
     "/api/workspaces/{workspace}/parameters/save", "/api/workspaces/{workspace}/parameters/options",
     "/api/servers/{server}/{role}/remote-backups", "/api/servers/{server}/{role}/remote-backups/fetch",
     "/api/servers/{server}/{role}/backups/verify", "/api/servers/{server}/{role}/archive",
@@ -770,6 +772,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         scheduler.load()
     except ConfigError as exc:
         schedules_error = str(exc)
+    if not schedules_error:
+        # AD-016 §16.1: the destination of the backups moves from the backup step to the instance, once; then each
+        # step says the instance's effective one, for the release before this one
+        try:
+            moved = schedules.migrate_offsite(settings, scheduler.schedules)
+            if moved:
+                _logger.warning("the destinations of the backups of %s are now their instances' (destinations.yaml)",
+                                ", ".join(sorted(moved)))
+            mirrored = schedules.mirror_offsite(settings, scheduler.schedules)
+            if mirrored is not None:
+                schedules.save_schedules(settings.schedules_file, mirrored)
+                scheduler.schedules = mirrored
+        except (OSError, ConfigError) as exc:
+            _logger.warning("the destinations of the backups were not carried to their instances: %s", exc)
     access_log = AccessLog(settings.logs_dir / "access.jsonl")
 
     def audit_fields(scope: dict) -> dict:
@@ -1534,7 +1550,13 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                             # this machine's own name: a customer is never told which machine it is (shown_name),
                             # «the server» as its map says it
                             here=frozenset({here_name()} - own - members - {"localhost", "omniacli"}),
-                            here_word=i18n.gettext(lang, "the server"))
+                            here_word=i18n.gettext(lang, "the server"),
+                            # the machine's backup destinations (AD-016 constraint 8): never their names nor where
+                            offsite=frozenset({p for d in load_destinations().values() if not d.workspace
+                                               for p in destinations.places(d)} - own - members
+                                              - {p for d in load_destinations().values() if d.workspace in mine
+                                                 for p in destinations.places(d)}),
+                            offsite_word=i18n.gettext(lang, destinations.OF_THE_SERVER))
 
     def mcp_view(workspace: str, found: dict | None, token: str | None) -> CustomerView:
         """What a workspace's MCP token reads of the jobs (customer_view, in English: MCP has no language); found:
@@ -1661,6 +1683,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "machine": lambda *a, **k: api_hooks["machine"](*a, **k),
                                              # the protection of this panel (AD-017 slice 7): the pages' code
                                              "central_backup": lambda *a, **k: api_hooks["central_backup"](*a, **k),
+                                             # the destinations of the backups (AD-016 §16.1): the pages' code
+                                             "offsite": lambda *a, **k: offsite_act(*a, **k),
                                              # a machine behind NAT and its central panel (AD-017 §17.6)
                                              "agent_relay": lambda *a, **k: api_hooks["agent_relay"](*a, **k),
                                              "link_relay": lambda *a, **k: api_hooks["link_relay"](*a, **k),
@@ -5267,6 +5291,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         leaves any workspace that still names it."""
         if old == new:
             return None
+        await offsite_renamed(old, new)
         async with workspaces_lock:
             changed = {}
             for ws in settings.workspaces.values():
@@ -5278,6 +5303,27 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if changed == settings.workspaces:
                 return None
             return await store_workspaces(changed)
+
+    async def offsite_renamed(old: str | None, new: str | None) -> None:
+        """Where the backups of a server go follows its name (AD-016 §16.1): renamed, its choices are the new name's;
+        deleted, they go; a new server never inherits the choice of one of before with its name."""
+        async with destinations_lock:
+            try:
+                choices = await asyncio.to_thread(load_choices)
+                changed = False
+                for key in list(choices.instances):
+                    server, _, role = key.partition("/")
+                    if server == new or server == old:
+                        value = choices.instances.pop(key)
+                        changed = True
+                        if server == old and new is not None:
+                            choices.instances[f"{new}/{role}"] = value
+                if changed:
+                    await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+            except (OSError, ConfigError) as exc:
+                _logger.warning("the destinations chosen by %s are not renamed: %s", old or new, exc)
+        if old is not None:
+            await offsite_mirror()
 
     def names_follow(before: Workspace, ws: Workspace, old: str | None, new: str | None) -> Workspace:
         """The main instance and the subdomains of ws after the server old
@@ -15015,8 +15061,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                        for t in schedules.next_runs(expr, 5)]}
 
     @app.post("/api/schedules/save", dependencies=[Depends(admin)])
-    async def schedules_save(payload: dict = Body(...)):
+    async def schedules_save(payload: dict = Body(...), me: Principal = Depends(current_user)):
         nonlocal schedules_error
+        wanted = None
         original = payload.get("original") or None
         name = str(payload.get("name") or "").strip()
         data = dict(payload.get("schedule") or {})
@@ -15031,14 +15078,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if srv is None or role not in srv.instances:
                 return refuse(f"No instance {data.get('instance')}")
             instance = srv.instances[role]
-            # what this form does not show stays as it was: the destination of
-            # the backup and whom to tell (the instance's Backups tab sets them)
+            # what this form does not show stays as it was: whom to tell (the instance's Backups tab sets it); the
+            # destination of a backup step is the instance's (AD-016 §16.1), written there for the release before
             before = current.get(original) if original is not None else None
             if before is not None and "notify" not in data:
                 data["notify"] = list(before.notify)
             backup = data.get("backup")
-            if backup and before is not None and before.backup and "destination" not in backup:
-                backup["destination"] = before.backup.destination
+            if backup:
+                # a destination given here (a script, the release before's form) is the instance's choice, as
+                # «Off-site copy to» makes it; a test's or a staging's is dropped (they have no copy, D-N3)
+                now_name = offsite_effective(instance).name
+                given = str(backup.get("destination") or "")
+                if given and given != now_name:
+                    view = offsite_view(instance, me)
+                    if view["shown"]:
+                        if given not in {o["value"] for o in view["options"] if o["kind"] in ("machine", "workspace")}:
+                            return refuse(f"No destination {given} for {instance.key}")
+                        wanted = given
+                backup["destination"] = now_name
             if backup:
                 if not instance.plugin.has_backup:
                     return refuse(f"{instance.plugin.label} has no backup")
@@ -15079,6 +15136,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 scheduler.history.rename(original, name)
             scheduler.schedules = updated
             schedules_error = ""
+        if wanted is not None:
+            code, said = await offsite_act("instance", me, "", {"server": instance.server, "role": instance.role,
+                                                                "destination": wanted})
+            if code >= 400:
+                return refuse(said["error"], code)
         return {"ok": True}
 
     @app.post("/api/schedules/delete", dependencies=[Depends(admin)])
@@ -15130,6 +15192,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 if sch is not None and sch.enabled else None
         except (ValueError, KeyError):
             upcoming = None
+        legacy = offsite_legacy(instance, me)
         return {"exists": sch is not None, "enabled": bool(sch and sch.enabled and backup), "time": time,
                 "cron": sch.cron if sch is not None else "", **rotation,
                 "options": dict(backup.options) if backup is not None else {},
@@ -15137,13 +15200,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 # the schedule runs at this machine's time
                 "zone": datetime.datetime.now().astimezone().tzname() or "",
                 "fields": [_field_dict(f) for f in instance.plugin.backup_fields() if f.kind == "checkbox"],
-                "destination": backup.destination if backup is not None else "",
+                # the field of the release before («Copy also to», inside the automatic backups): a central panel of
+                # that release draws this page with its template; this one draws offsite (AD-016 §16.9)
+                "destination": legacy,
                 "verify": backup is not None and backup.verify_weekday is not None,
                 "archive": bool(backup and backup.archive),
                 "has_verify": instance.plugin.has_verify,
                 "verified": last_verified(instance),
                 "destinations": [{"name": d.name, "label": d.label, "path": d.path, "workspace": d.workspace}
-                                 for d in destination_choices(instance, me, backup.destination if backup else "")],
+                                 for d in destination_choices(instance, me, legacy)],
+                "offsite": offsite_view(instance, me),
                 "notify": list(sch.notify) if sch is not None else [],
                 "can_edit": me.can(backup_role(instance))}
 
@@ -15173,6 +15239,217 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         here = {ws.name for ws in settings.workspaces.values() if instance.server in ws.servers}
         return [d for d in found.values()
                 if (d.workspace in here) or (not d.workspace and machine_admin(me)) or d.name == current]
+
+    # --- where each instance's backups go (AD-016 §16.1): the machine's default and the instances' choices in
+    # destinations.yaml, read by destinations.effective, the one function every reader asks; the pages, the REST API
+    # and MCP change them through offsite_act
+
+    def load_choices() -> destinations.Choices:
+        return destinations.load_choices(settings.destinations_file)
+
+    def hides_machine_destinations(me: Principal) -> bool:
+        """A person (or a token) of workspaces reads no name of the machine's destinations (UX-016 §13, AD-016
+        constraint 8): «the server's default», «off site»."""
+        return bool(me.workspaces)
+
+    def offsite_instances() -> list[Instance]:
+        """The instances whose backups go off site: the productions of the active servers that back up, not a
+        staging's (a test or a staging has none, D-N3)."""
+        staging = destinations.staging_servers(settings)
+        return [srv.production for srv in settings.active_servers()
+                if srv.production is not None and srv.production.plugin.has_backup and srv.name not in staging]
+
+    def offsite_effective(instance: Instance, found: dict | None = None,
+                          choices: destinations.Choices | None = None) -> destinations.Effective:
+        return destinations.effective(settings, instance, load_destinations() if found is None else found,
+                                      load_choices() if choices is None else choices)
+
+    def offsite_users(found: dict, choices: destinations.Choices) -> dict:
+        """{destination: [instances whose backups go there now]}: the effective ones."""
+        staging = destinations.staging_servers(settings)
+        used: dict = {}
+        for srv in settings.active_servers():
+            for inst in srv.instances.values():
+                name = destinations.effective(settings, inst, found, choices, staging).name
+                if name:
+                    used.setdefault(name, []).append(inst.key)
+        return used
+
+    def offsite_chosen(choices: destinations.Choices) -> dict:
+        """{instance: destination} of the choices that count: an existing production that is not a staging (a choice
+        of a test, a staging or a server gone copies nowhere, and keeps no destination from being deleted)."""
+        live = {i.key for i in offsite_instances()}
+        return {k: v.get("destination") for k, v in choices.instances.items() if k in live}
+
+    def offsite_counts(found: dict, choices: destinations.Choices) -> dict:
+        """How many productions follow the default (copy to whichever it is) and how many chose their own."""
+        whys = [destinations.effective(settings, i, found, choices).why for i in offsite_instances()]
+        return {"total": len(whys), "chosen": whys.count(destinations.FROM_INSTANCE),
+                "following": len(whys) - whys.count(destinations.FROM_INSTANCE)}
+
+    def offsite_view(instance: Instance, me: Principal) -> dict:
+        """The field «Off-site copy to» of the instance's Backups tab (UX-016 §5): shown for a production that is not
+        a staging; its options in order (the default, the machine's other destinations for its admins, the
+        workspace's); for a person of workspaces no name of the machine's destinations."""
+        found, choices = load_destinations(), load_choices()
+        eff = offsite_effective(instance, found, choices)
+        hide = hides_machine_destinations(me)
+        default = found.get(choices.default)
+        default = default if default is not None and not default.workspace else None
+        here = {ws.name for ws in settings.workspaces.values() if instance.server in ws.servers}
+        options = [{"value": "", "kind": "default", "name": "" if hide or default is None else default.name}]
+        if machine_admin(me):
+            options += [{"value": d.name, "kind": "machine", "name": d.name, "label": d.label}
+                        for d in sorted(found.values(), key=lambda d: d.name) if not d.workspace]
+        options += [{"value": d.name, "kind": "workspace", "name": d.name, "label": d.label}
+                    for d in sorted(found.values(), key=lambda d: d.name) if d.workspace and d.workspace in here]
+        value = eff.chosen if eff.why == destinations.FROM_INSTANCE else ""
+        if value and not any(o["value"] == value for o in options):
+            # chosen by an admin of the machine among its destinations: who may not see their names reads «one of
+            # the server's», and keeps it by not changing the field
+            options.append({"value": "*", "kind": "server", "name": ""})
+            value = "*"
+        dest = eff.destination
+        return {"shown": eff.why not in (destinations.FROM_TEST, destinations.FROM_STAGING)
+                and instance.plugin.has_backup,
+                "why": eff.why, "value": value, "options": options, "has_default": default is not None,
+                "effective": "" if dest is None or (hide and not dest.workspace) else dest.name,
+                "effective_kind": None if dest is None else ("workspace" if dest.workspace else "machine"),
+                "since": (choices.instances.get(instance.key) or {}).get("since", "") if value else "",
+                "can_edit": me.can(backup_role(instance)), "machine_admin": machine_admin(me),
+                "workspace": next(iter(sorted(here)), "")}
+
+    def offsite_legacy(instance: Instance, me: Principal) -> str:
+        """What the field «Copy also to» of the release before (a central panel that draws this machine's page with
+        its own template) shows and posts back: the effective destination, when me may read its name."""
+        dest = offsite_effective(instance).destination
+        return "" if dest is None or (hides_machine_destinations(me) and not dest.workspace) else dest.name
+
+    async def offsite_mirror() -> None:
+        """Each backup step says its instance's effective destination again (the release before reads it)."""
+        async with schedules_lock:
+            try:
+                mirrored = await asyncio.to_thread(schedules.mirror_offsite, settings, scheduler.schedules)
+                if mirrored is not None:
+                    await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, mirrored)
+                    scheduler.schedules = mirrored
+            except OSError as exc:
+                _logger.warning("the destinations of the backup steps were not written again: %s", exc)
+
+    def offsite_status(me: Principal) -> dict:
+        """The default and the choices as the REST API and MCP read them: names, kinds, folders, no secret."""
+        found, choices = load_destinations(), load_choices()
+        default = found.get(choices.default)
+        default = default if default is not None and not default.workspace else None
+        staging = destinations.staging_servers(settings)
+        return {"default": None if default is None else {"destination": default.name, "since": choices.default_since,
+                                                         "kind": default.label, "path": default.path},
+                "destinations": [{"name": d.name, "kind": d.label, "path": d.path, "workspace": d.workspace or None,
+                                  "default": default is not None and d.name == default.name,
+                                  "key_shown": destinations.key_shown(choices, d)}
+                                 for d in sorted(found.values(), key=lambda d: (d.workspace, d.name))],
+                "instances": [{"instance": inst.key, "chosen": eff.chosen or None, "destination": eff.name or None,
+                               "why": eff.why}
+                              for srv in settings.active_servers() for inst in srv.instances.values()
+                              for eff in [destinations.effective(settings, inst, found, choices, staging)]],
+                "productions": offsite_counts(found, choices)}
+
+    async def offsite_act(op: str, me: Principal, ip: str = "", body: Optional[dict] = None) -> tuple[int, dict]:
+        """(status, answer) of op, as the pages' routes, the REST API and MCP ask it ({"error", "code"} for a
+        refusal): status (the machine's admins); default, a destination of the machine made the default ("" none,
+        key_saved when its key was never shown); instance, the destination of server/role ("" follows the default),
+        by who sets its backups (backup_role) among the ones it may choose. Each change in the access log."""
+        body = dict(body or {})
+        if op in ("status", "default"):
+            if not machine_admin(me):
+                return 403, {"error": "The default destination of the backups is set by an admin of the machine",
+                             "code": "forbidden"}
+            if op == "status":
+                return 200, offsite_status(me)
+        if op == "default":
+            name = str(body.get("destination") or "").strip()
+            async with destinations_lock:
+                found, choices = await asyncio.to_thread(load_destinations), await asyncio.to_thread(load_choices)
+                dest = found.get(name) if name else None
+                if name and (dest is None or dest.workspace):
+                    return 404, {"error": f"No destination {name} of this machine", "code": "not_found"}
+                if dest is not None and not destinations.key_shown(choices, dest) and not body.get("key_saved"):
+                    return 409, {"error": f"The key of {name} was never shown: show it (Show the key), keep it "
+                                          "out of here, then say key_saved: without it the copies cannot be read "
+                                          "back on another machine", "code": "key_not_saved"}
+                before = choices.default
+                if name == before:
+                    return 200, {"ok": True, **offsite_status(me)}
+                choices.default, choices.default_since = name, destinations.now() if name else ""
+                try:
+                    await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+                except OSError as exc:
+                    return 500, {"error": f"Cannot write {settings.destinations_file}: {exc}", "code": "failed"}
+            access_log.record("default destination", me.kind, me.name, ip,
+                              f"the default destination of the backups: {name or 'none'} (was {before or 'none'})")
+            await offsite_mirror()
+            return 200, {"ok": True, **offsite_status(me)}
+        if op in ("instance", "view"):
+            server, role = str(body.get("server") or ""), str(body.get("role") or "")
+            instance = settings.instance(server, role) if role in ROLES else None
+            key = f"{server}/{role}"
+            if op == "instance" and not str(body.get("destination") or "").strip() and (
+                    instance is None or offsite_effective(instance).why in (destinations.FROM_TEST,
+                                                                            destinations.FROM_STAGING)):
+                # a choice left behind (a test's, a staging's, a server gone): taken back by who may, never refused
+                if not (machine_admin(me) if instance is None else me.can(backup_role(instance))):
+                    return 403, {"error": "An admin of the machine takes it back", "code": "forbidden"}
+                async with destinations_lock:
+                    choices = await asyncio.to_thread(load_choices)
+                    if choices.instances.pop(key, None) is not None:
+                        await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+                        access_log.record("instance destination", me.kind, me.name, ip,
+                                          f"{key}: its choice of a destination taken back")
+                return 200, {"ok": True, **(offsite_view(instance, me) if instance is not None else {})}
+            if instance is None or (visible_servers(me) is not None and server not in visible_servers(me)):
+                return 404, {"error": f"No instance {server}/{role}", "code": "not_found"}
+            if op == "view":
+                return 200, offsite_view(instance, me)
+            if not me.can(backup_role(instance)):
+                return 403, {"error": f"The {backup_role(instance)} role is required", "code": "forbidden"}
+            view = offsite_view(instance, me)
+            if not view["shown"]:
+                return 400, {"error": f"{instance.key} is a test or a staging: its backups have no off-site copy",
+                             "code": "refused"}
+            name = str(body.get("destination") or "").strip()
+            if name == "*" or name == view["value"]:
+                return 200, {"ok": True, **offsite_view(instance, me)}
+            if name and name not in {o["value"] for o in view["options"] if o["kind"] in ("machine", "workspace")}:
+                return 404, {"error": f"No destination {name} for {instance.key}", "code": "not_found"}
+            async with destinations_lock:
+                choices = await asyncio.to_thread(load_choices)
+                before = choices.choice(instance.key)
+                if name:
+                    choices.instances[instance.key] = {"destination": name, "since": destinations.now()}
+                else:
+                    choices.instances.pop(instance.key, None)
+                try:
+                    await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+                except OSError as exc:
+                    return 500, {"error": f"Cannot write {settings.destinations_file}: {exc}", "code": "failed"}
+            found = load_destinations()
+
+            def said(chosen: str) -> str:
+                # the workspace's access log is its people's: a destination of the machine is not named there
+                if not chosen:
+                    return "the default"
+                return chosen if chosen in found and found[chosen].workspace else "a destination of the machine" \
+                    if settings.workspace_of(instance.server) else chosen
+            access_log.record("instance destination", me.kind, me.name, ip,
+                              f"{instance.key}: the destination of its backups {said(name)} "
+                              f"(was {said(before)})", server=instance.server,
+                              workspace=settings.workspace_of(instance.server) or "")
+            await offsite_mirror()
+            return 200, {"ok": True, **offsite_view(instance, me)}
+        return 404, {"error": f"No {op} here", "code": "not_found"}
+
+    def offsite_answer(status_code: int, data: dict):
+        return JSONResponse(data, status_code=status_code) if status_code >= 300 else data
 
     def backup_role(instance: Instance) -> str:
         """Who may delete an instance's backups and set its automatic ones:
@@ -15209,15 +15486,26 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                        for f in instance.plugin.backup_fields() if f.kind == "checkbox"}
         except ActionRefused as exc:
             return refuse(str(exc))
+        # the destination is the instance's now (AD-016 §16.1, «Off-site copy to», offsite_act): this form says it
+        # only when drawn by a central panel of the release before, whose field is inside it; changed there, it is
+        # the instance's choice ("" the default), checked here and made once the schedule is saved
+        wanted = None
+        if "destination" in payload and str(payload.get("destination") or "") != offsite_legacy(instance, me):
+            wanted = str(payload.get("destination") or "")
+            view = offsite_view(instance, me)
+            if not wanted and hides_machine_destinations(me):
+                # «nowhere» of that form: for who cannot see the server's default, following it would be a copy
+                # somewhere it did not choose; until slice 8 it changes nothing (no production goes nowhere, D-N1)
+                wanted = None
+        if wanted is not None:
+            if wanted and (not view["shown"] or wanted not in
+                           {o["value"] for o in view["options"] if o["kind"] in ("machine", "workspace")}):
+                return refuse(f"No destination {wanted} for {instance.key}")
         async with schedules_lock:
             current = scheduler.schedules.get(name)
             data = schedules.schedule_to_dict(current) if current is not None else {
                 "instance": instance.key, "user": me.name if me.kind == "user" else ""}
-            destination = str(payload.get("destination") or "")
-            was = current.backup.destination if current is not None and current.backup else ""
-            if destination and destination != was and destination not in [
-                    d.name for d in destination_choices(instance, me)]:
-                return refuse(f"No destination {destination} for {instance.key}")
+            destination = offsite_effective(instance).name
             # a restore tried every Sunday: on, or as it was
             weekday = (current.backup.verify_weekday if current is not None and current.backup else None)
             if "verify" in payload:
@@ -15245,6 +15533,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 return refuse(f"Cannot write {settings.schedules_file}: {exc}", 500)
             scheduler.schedules = updated
             scheduler.history.keep_only(updated)
+        if wanted is not None:
+            code, said = await offsite_act("instance", me, "", {"server": instance.server, "role": instance.role,
+                                                                "destination": wanted})
+            if code >= 400:
+                return refuse(said["error"], code)
         return {"ok": True, **backup_schedule_view(instance, me)}
 
     # --- deploy on push (deployhooks.py) -------------------------------------
@@ -16700,9 +16993,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return {"ok": True}
 
     async def remote_of(instance: Instance) -> "destinations.Destination | None":
-        sch = scheduler.schedules.get(backup_schedule_name(instance))
-        name = sch.backup.destination if sch is not None and sch.backup else ""
-        return load_destinations().get(name) if name else None
+        """The destination the instance's backups go to now (destinations.effective)."""
+        return offsite_effective(instance).destination
 
     @app.get("/api/servers/{server}/{role}/remote-backups", dependencies=[Depends(developer)])
     async def remote_backups(server: str, role: str, me: Principal = Depends(current_user)):
@@ -16712,12 +17004,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         dest = await remote_of(instance)
         if dest is None:
             return {"destination": None, "files": []}
+        # a person of workspaces reads no name nor folder of the machine's destinations (AD-016 constraint 8)
+        hidden = hides_machine_destinations(me) and not dest.workspace
         try:
             files = await destinations.listing(dest, destinations.instance_folder(instance))
         except JobFailed as exc:
-            return JSONResponse({"error": str(exc), "destination": dest.name}, status_code=502)
+            return JSONResponse({"error": "The off-site copies cannot be read now" if hidden else str(exc),
+                                 "destination": "" if hidden else dest.name}, status_code=502)
         local = backup_folder(instance)
-        return {"destination": {"name": dest.name, "label": dest.label, "path": dest.path},
+        return {"destination": {"name": "", "label": "", "path": ""} if hidden else
+                {"name": dest.name, "label": dest.label, "path": dest.path},
                 "files": [{**f, "here": (local / f["file"]).exists()} for f in files],
                 "can_fetch": me.can(backup_role(instance))}
 
@@ -16736,9 +17032,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if not name.endswith(destinations.SUFFIX) or not _BACKUP_NAME.fullmatch(name[:-len(destinations.SUFFIX)]):
             return refuse("No such copy", status.HTTP_404_NOT_FOUND)
         folder = backup_folder(instance)
-        job = jobs.submit(f"Bring back {name[:-len(destinations.SUFFIX)]} from {dest.name}", [instance.key],
+        # a workspace's job (its people read it, and its access log the title) never names the machine's destination
+        said = destinations.said_to(settings, instance, dest)
+        job = jobs.submit(f"Bring back {name[:-len(destinations.SUFFIX)]} from {said or dest.name}", [instance.key],
                           f"manual: {me}", lambda job: destinations.fetch(
-                              job, dest, destinations.instance_folder(instance), name, folder))
+                              job, dest, destinations.instance_folder(instance), name, folder, said))
         return {"job": job.id}
 
     # --- remote destinations of the backups -----------------------------
@@ -16747,13 +17045,17 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     def destination_rows(workspace: str | None) -> list:
         """The destinations of a workspace ("" the machine's, None all of them),
-        as the page shows them, and which schedules use each."""
-        used = {}
-        for sch in scheduler.schedules.values():
-            if sch.backup and sch.backup.destination:
-                used.setdefault(sch.backup.destination, []).append(sch.instance)
-        return [{**d.public(), "used_by": sorted(used.get(d.name, []))}
-                for d in sorted(load_destinations().values(), key=lambda d: (d.workspace, d.name))
+        as the page shows them: the instances whose backups go there now, the ones that chose it, whether it is the
+        machine's default and whether its key was ever shown (no secret: a yes or no)."""
+        found, choices = load_destinations(), load_choices()
+        used = offsite_users(found, choices)
+        chosen: dict = {}
+        for key, name in offsite_chosen(choices).items():
+            chosen.setdefault(name, []).append(key)
+        return [{**d.public(), "used_by": sorted(used.get(d.name, [])), "chosen_by": sorted(chosen.get(d.name, [])),
+                 "default": not d.workspace and d.name == choices.default,
+                 "key_shown": destinations.key_shown(choices, d)}
+                for d in sorted(found.values(), key=lambda d: (d.workspace, d.name))
                 if workspace is None or d.workspace == workspace]
 
     def destination_kinds(lang: str) -> dict:
@@ -16802,9 +17104,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             found = await asyncio.to_thread(load_destinations)
             if name not in found or found[name].workspace != workspace:
                 return refuse(f"No destination {name} here", status.HTTP_404_NOT_FOUND)
-            users = [s.instance for s in scheduler.schedules.values() if s.backup and s.backup.destination == name]
+            choices = await asyncio.to_thread(load_choices)
+            if not workspace and choices.default == name:
+                return refuse(f"{name} is the default destination of this machine: make another the default first, "
+                              "or say it is no longer the default")
+            users = set(offsite_users(found, choices).get(name, [])) | {
+                k for k, v in offsite_chosen(choices).items() if v == name}
             if users:
-                return refuse(f"The automatic backups of {', '.join(sorted(users))} go to {name}: choose another first")
+                return refuse(f"The backups of {', '.join(sorted(users))} go to {name}: choose another first")
             found.pop(name)
             await asyncio.to_thread(destinations.save_destinations, settings.destinations_file, found)
         return {"ok": True}
@@ -16823,12 +17130,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         except JobFailed as exc:
             return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
 
-    def destination_key(request: Request, me: Principal, workspace: str, payload: dict):
+    async def destination_key(request: Request, me: Principal, workspace: str, payload: dict):
         """The destination's key, to keep elsewhere: without it, its copies
-        cannot be read back on another machine."""
+        cannot be read back on another machine. Shown once, it is remembered
+        (its fingerprint): «Make default…» asks it shown before (UX-016 §4)."""
         dest = destination_of(workspace, payload)
         access_log.record("show destination key", me.kind, me.name, request.client.host if request.client else "",
                           dest.name)
+        async with destinations_lock:
+            choices = await asyncio.to_thread(load_choices)
+            if not destinations.key_shown(choices, dest):
+                choices.keys_shown[dest.name] = destinations.key_fingerprint(dest.key)
+                try:
+                    await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+                except OSError as exc:
+                    _logger.warning("that the key of %s was shown is not remembered: %s", dest.name, exc)
         return {"key": dest.key}
 
     @context_of("destinations")
@@ -16841,9 +17157,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             return {"rows": destination_rows(ws.name), "kinds": destination_kinds(lang),
                     "api": f"/api/workspaces/{ws.name}/destinations", "workspace": ws.name, "ws": ws,
                     "rclone": destinations.rclone_path() is not None, "file": None}
+        found, choices = load_destinations(), load_choices()
+        default = found.get(choices.default)
         return {"rows": destination_rows(None), "kinds": destination_kinds(lang), "api": "/api/destinations",
                 "workspace": "", "rclone": destinations.rclone_path() is not None,
-                "file": settings.destinations_file}
+                "file": settings.destinations_file,
+                # the machine's default (AD-016 §16.1, UX-016 §4): its name and since when, and how many productions
+                # follow it and chose their own (the numbers of «Make default…» and of the note-box without one)
+                "default": {"name": default.name, "since": choices.default_since}
+                if default is not None and not default.workspace else None,
+                "productions": offsite_counts(found, choices)}
 
     @app.get("/destinations", dependencies=[Depends(admin)])
     async def destinations_page(request: Request):
@@ -16860,6 +17183,22 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def machine_destination_delete(payload: dict = Body(...)):
         return await destination_delete("", payload)
 
+    @app.post("/api/destinations/default", dependencies=[Depends(admin)])
+    async def machine_destination_default(request: Request, payload: dict = Body(...),
+                                          me: Principal = Depends(current_user)):
+        """The machine's default destination (AD-016 §16.1): {destination, key_saved}; "" none."""
+        return offsite_answer(*await offsite_act("default", me, request.client.host if request.client else "",
+                                                 payload))
+
+    @app.post("/api/servers/{server}/{role}/backup-destination")
+    async def backup_destination_save(request: Request, server: str, role: str, payload: dict = Body(...),
+                                      me: Principal = Depends(current_user)):
+        """«Off-site copy to» of the instance's Backups tab (UX-016 §5): {destination}, "" the server's default."""
+        instance = get_instance(server, role)
+        return offsite_answer(*await offsite_act(
+            "instance", me, request.client.host if request.client else "",
+            {"server": instance.server, "role": instance.role, "destination": payload.get("destination")}))
+
     @app.post("/api/destinations/check", dependencies=[Depends(admin)])
     async def machine_destination_check(payload: dict = Body(...)):
         return await destination_check("", payload)
@@ -16867,7 +17206,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/destinations/key", dependencies=[Depends(admin)])
     async def machine_destination_key(request: Request, payload: dict = Body(...),
                                       me: Principal = Depends(current_user)):
-        return destination_key(request, me, "", payload)
+        return await destination_key(request, me, "", payload)
 
     @app.get("/workspaces/{workspace}/destinations", dependencies=[Depends(admin)])
     async def workspace_destinations_page(request: Request, workspace: str):
@@ -16889,7 +17228,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     @app.post("/api/workspaces/{workspace}/destinations/key", dependencies=[Depends(admin)])
     async def workspace_destination_key(request: Request, workspace: str, payload: dict = Body(...),
                                         me: Principal = Depends(current_user)):
-        return destination_key(request, me, a_workspace(workspace).name, payload)
+        return await destination_key(request, me, a_workspace(workspace).name, payload)
 
     # --- the protection of this panel (AD-017 §17.4.3, slice 7): its own state sealed every night on a
     # destination, to a key whose passphrase only its admin keeps (centralbackup.py); the pages, the REST API and
@@ -18759,7 +19098,10 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             tonight["failed"] += night["failed"]
             if not state["scheduled"]:
                 tonight["unscheduled"] += 1
-            name = sch.backup.destination if sch is not None and sch.backup and state["scheduled"] else ""
+            # where its backups go (destinations.effective); a customer reads no name of the machine's destinations
+            dest = destinations.effective(settings, prod, found_dest or None, staging=set(known)).destination \
+                if state["scheduled"] else None
+            name = dest.name if dest is not None and not (view is not None and not dest.workspace) else ""
             last = state["last"]
             return {"scheduled": state["scheduled"], "time": at if state["scheduled"] else None,
                     "destination": name or None, "destination_id": f"{inframap.HERE}/dest:{name}" if name else None,
@@ -26576,10 +26918,45 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         and the workspace's destinations they copy to, with their keys (a secret: in the body only)."""
         own = [sch for sch in scheduler.schedules.values()
                if sch.instance.partition("/")[0] == server and sch.copy is None and sch.script is None]
-        used = {sch.backup.destination for sch in own if sch.backup is not None and sch.backup.destination}
+        given = {sch.name: offsite_for_transfer(schedules.schedule_to_dict(sch), ws.name) for sch in own}
+        used = {data["backup"]["destination"] for data in given.values() if (data.get("backup") or {}).get("destination")}
         found = {n: d for n, d in load_destinations().items() if n in used and d.workspace == ws.name}
-        return {"schedules": {sch.name: schedules.schedule_to_dict(sch) for sch in own},
-                "destinations": {n: d.to_dict() for n, d in found.items()}}
+        return {"schedules": given, "destinations": {n: d.to_dict() for n, d in found.items()}}
+
+    def offsite_for_transfer(data: dict, workspace: str) -> dict:
+        """A schedule as it goes to another machine with its workspace (a move, AD-014; a handover, AD-008): its
+        backup step names the destination its instance chose when it is one of that workspace (it goes with it, AD-016
+        §16.9), else none (there the instance follows that machine's default)."""
+        if isinstance(data.get("backup"), dict):
+            chosen = load_choices().choice(str(data.get("instance") or ""))
+            dest = load_destinations().get(chosen) if chosen else None
+            data["backup"] = {k: v for k, v in data["backup"].items() if k != "destination"}
+            if dest is not None and dest.workspace == workspace:
+                data["backup"]["destination"] = chosen
+        return data
+
+    async def offsite_adopt(job, steps: dict, workspace: str, arrived) -> None:
+        """The destinations the backup steps of schedules received from another machine name ({instance: name}),
+        made their instances' choices when each is one of workspace's that arrived with them (arrived: their names
+        here) and the instance has none (AD-016 §16.9): never one of this machine's own, which the other machine
+        does not choose; then every step says its effective one again."""
+        async with destinations_lock:
+            found, choices = await asyncio.to_thread(load_destinations), await asyncio.to_thread(load_choices)
+            taken = []
+            for key, name in steps.items():
+                server, _, role = key.partition("/")
+                inst = settings.instance(server, role) if role in ROLES else None
+                dest = found.get(name)
+                if inst is None or not name or name not in arrived or dest is None or dest.workspace != workspace \
+                        or choices.choice(key) or not destinations.usable(dest, inst, settings):
+                    continue
+                choices.instances[key] = {"destination": name, "since": destinations.now()}
+                taken.append(f"{key} → {name}")
+            if taken:
+                await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+        if taken:
+            job.log(f"Where their backups go: {', '.join(sorted(taken))}")
+        await offsite_mirror()
 
     async def move_suspend(job, server: str) -> None:
         """The schedules of a placed instance here switched off, kept for its return (AD-014): its host runs them."""
@@ -27630,6 +28007,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     async def placement_schedules(job, workspace: str, name: str, payload: dict) -> None:
         """The schedules of an instance placed here and the destinations of its workspace they copy to, from its
         home (AD-014): an instance's schedules only, a destination of that workspace only."""
+        arrived: set = set()
         given = payload.get("destinations")
         if isinstance(given, dict) and given:
             async with destinations_lock:
@@ -27649,6 +28027,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                     kept.append(str(dest_name))
                 await asyncio.to_thread(destinations.save_destinations, settings.destinations_file, found)
             job.log(f"The destinations of its workspace: {', '.join(sorted(kept)) or 'none'}")
+            arrived = set(kept)
         given = payload.get("schedules")
         if isinstance(given, dict) and given:
             async with schedules_lock:
@@ -27665,6 +28044,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, updated)
                 scheduler.schedules = updated
             job.log(f"Its schedules: {', '.join(sorted(kept)) or 'none'}")
+            await offsite_adopt(job, {updated[n].instance: updated[n].backup.destination for n in kept
+                                      if updated[n].backup is not None and updated[n].backup.destination},
+                                workspace, arrived)
 
     async def restore_dump(job, ws: Workspace, instance: str, inst: Instance, payload: dict) -> float:
         """The dump the last round of the backups brought ({file, size, hash, counts}: what the other machine
@@ -27919,9 +28301,15 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 updated = {n: s for n, s in scheduler.schedules.items() if n not in gone}
                 await asyncio.to_thread(schedules.save_schedules, settings.schedules_file, updated)
                 scheduler.schedules = updated
-        used = {s.backup.destination for s in scheduler.schedules.values() if s.backup is not None and s.backup.destination}
         async with destinations_lock:
-            found = await asyncio.to_thread(load_destinations)
+            found, choices = await asyncio.to_thread(load_destinations), await asyncio.to_thread(load_choices)
+            # its instances' choices go with it; a destination of its workspace no other instance here uses goes too
+            mine = [k for k in choices.instances if k.partition("/")[0] == server]
+            for key in mine:
+                choices.instances.pop(key)
+            if mine:
+                await asyncio.to_thread(destinations.save_choices, settings.destinations_file, choices)
+            used = set(offsite_users(found, choices)) | set(offsite_chosen(choices).values())
             dropped = [n for n, d in found.items() if d.workspace == workspace and n not in used]
             if dropped:
                 await asyncio.to_thread(destinations.save_destinations, settings.destinations_file,
@@ -30617,7 +31005,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for name, sch in scheduler.schedules.items():
             if sch.instance.partition("/")[0] in servers and sch.copy is None and sch.script is None:
                 sch = dataclasses.replace(sch, enabled=True) if name in suspended else sch
-                data = schedules.schedule_to_dict(sch)
+                # its backups' destination when it is the workspace's (AD-016 §16.9): never the provider's default
+                data = offsite_for_transfer(schedules.schedule_to_dict(sch), ws.name)
                 # its maker passes when it passes; its addresses never (they may be the provider's people's)
                 if data.get("user") not in people:
                     data.pop("user", None)
@@ -31795,6 +32184,9 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             scheduler.schedules = updated
         handovers_in.update(hid, sched_map=sched_map)
         job.log(f"Its schedules: {', '.join(kept) or 'none'}")
+        await offsite_adopt(job, {updated[n].instance: updated[n].backup.destination for n in kept
+                                  if updated[n].backup is not None and updated[n].backup.destination},
+                            ws.name, set(dest_map.values()))
         if shift:
             job.log(f"Their hours moved by {shift:+d} h: they run at the same instant in this machine's zone")
         if dest_map:
@@ -32909,6 +33301,64 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                  "it to the destination, the older copies there out of the rotation.")
     async def api_central_backup_run(request: Request, me: Principal = Depends(api_token)):
         return api_central_answer(request, *await central_backup_act("run", me, f"api: {me}", api_ip(request)))
+
+    # --- the destinations of the backups (AD-016 §16.1): the pages' code (offsite_act); the machine's default for its
+    # admin tokens (never a workspace's nor a CI's), an instance's destination for who sets its backups
+
+    def api_offsite_answer(status_code: int, data: dict):
+        if status_code >= 400:
+            raise ApiError(status_code, data.get("code") or apiv1.code_of(status_code), data.get("error") or "Refused")
+        return data
+
+    def api_offsite_machine(me: Principal) -> None:
+        if settings.token_ci(me.name) or me.ci:
+            raise ApiError(403, "forbidden", "A CI token never sets the destinations of the backups")
+        if settings.token_servers(me.name):
+            raise ApiError(403, "forbidden", "This token reaches some servers only: the default destination is the "
+                                             "machine's")
+
+    @api_router.get(P + "/destinations", summary="Read the destinations of the backups",
+                    description="The machine's default destination (since when), every destination with its kind, "
+                                "folder, workspace and whether its key was ever shown, and where each instance's "
+                                "backups go (why: instance, default, none, test, staging). No secret. A token of the "
+                                "machine with the admin role.")
+    async def api_destinations(request: Request, me: Principal = Depends(api_token)):
+        api_offsite_machine(me)
+        return api_offsite_answer(*await offsite_act("status", me, api_ip(request)))
+
+    @api_router.post(P + "/destinations/default", summary="Set the default destination of the backups",
+                     description="The destination of the machine the productions that choose none copy every backup "
+                                 "to, encrypted, from their next one; \"\" none. Its key must have been shown once "
+                                 "(Show the key on the page) or key_saved: true. The copies already made stay where "
+                                 "they are. A token of the machine with the admin role, never a CI token.")
+    async def api_destinations_default(request: Request, body: apiv1.DefaultDestinationBody,
+                                       me: Principal = Depends(api_token)):
+        api_offsite_machine(me)
+        return api_offsite_answer(*await offsite_act("default", me, api_ip(request), body.model_dump()))
+
+    @api_router.get(P + "/instances/{server}/{role}/destination", summary="Read where an instance's backups go",
+                    description="The destination its backups are copied to now (value: its choice, \"\" the "
+                                "server's default), why, and the destinations it may choose. A workspace's token reads "
+                                "«the server's default» without its name.")
+    async def api_instance_destination(server: str = PathParam(description="The server's name"),
+                                       role: str = PathParam(description="production or test"),
+                                       me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        api_developer(me, "Reading where the backups go")
+        return offsite_view(inst, me)
+
+    @api_router.post(P + "/instances/{server}/{role}/destination", summary="Choose where an instance's backups go",
+                     description="Every backup of the instance is copied there, encrypted, from the next one: a "
+                                 "destination it may use (GET lists them) or \"\" for the server's default. A "
+                                 "production's needs the admin role. The copies already made stay where they are.")
+    async def api_instance_destination_save(request: Request, body: apiv1.InstanceDestinationBody,
+                                            server: str = PathParam(description="The server's name"),
+                                            role: str = PathParam(description="production or test"),
+                                            me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        return api_offsite_answer(*await offsite_act("instance", me, api_ip(request),
+                                                     {"server": inst.server, "role": inst.role,
+                                                      "destination": body.destination}))
 
     # --- a machine behind NAT managed from a central panel (AD-017 §17.6): the pages' code (agent_relay_act,
     # link_relay_act), for a token of the machine with the admin role, never a workspace's or a CI's

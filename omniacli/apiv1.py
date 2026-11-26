@@ -48,6 +48,9 @@ V1_WORKSPACE_TOOLS = {
     ("GET", "/api/v1/instances/{server}/{role}/deploys"): ("list_deploys",),
     ("POST", "/api/v1/instances/{server}/{role}/deploys/{deploy_id}/back"): ("deploy_back",),
     ("POST", "/api/v1/instances/{server}/stagings"): ("create_staging",),
+    # where an instance's backups go off site (AD-016 §16.1): the default of the server or a destination it may use
+    ("GET", "/api/v1/instances/{server}/{role}/destination"): ("instance_destination",),
+    ("POST", "/api/v1/instances/{server}/{role}/destination"): ("set_instance_destination",),
 }
 # the handover of a workspace to a customer's OmniaCLI and the move of an instance to another machine (AD-008 §9
 # step 10, UX-014 A13 and B6): the machine's admin tokens only, never a workspace's (not in WORKSPACE_ROUTES)
@@ -106,8 +109,14 @@ V1_PORTAL_TOOLS = {
     ("POST", "/api/v1/portal/passkeys"): ("portal_passkeys",),
     ("POST", "/api/v1/portal/panel-second-factor"): ("portal_panel_second_factor",),
 }
+# the destinations of the backups (AD-016 §16.1): the machine's default and where each instance's backups go, with
+# the destinations' names, kinds and folders (no secret); the machine's admin tokens only, never a workspace's nor a CI's
+V1_DESTINATION_TOOLS = {
+    ("GET", "/api/v1/destinations"): ("destinations_status",),
+    ("POST", "/api/v1/destinations/default"): ("set_default_destination",),
+}
 V1_TOOLS = {**V1_WORKSPACE_TOOLS, **V1_MACHINE_TOOLS, **V1_CENTRAL_TOOLS, **V1_RELAY_TOOLS, **V1_IDENTITY_TOOLS,
-            **V1_PORTAL_TOOLS}
+            **V1_PORTAL_TOOLS, **V1_DESTINATION_TOOLS}
 # the steps of a move and of its return as MCP's move_instance and move_back name them: what follows move/ (or
 # move/back/) in the REST path
 MOVE_STEPS = {"prepare": "", "complete": "complete", "cancel": "cancel", "delete_copy": "delete-copy"}
@@ -289,6 +298,20 @@ class CentralBackupBody(_Model):
     destination: Optional[str] = Field(None, description="A destination of the machine (GET lists them); empty: none")
     time: Optional[str] = Field(None, description="The time of every day it runs, HH:MM in the machine's clock")
     enabled: Optional[bool] = Field(None, description="false: it does not run at night (Run now still does)")
+
+
+class DefaultDestinationBody(_Model):
+    destination: str = Field(description="A destination of the machine (GET /destinations lists them): the backups of "
+                                         "the productions that choose none go there from their next one; \"\": "
+                                         "none (they stay on the machine only)")
+    key_saved: bool = Field(False, description="true: its key is kept out of this machine (a password manager). "
+                                               "Needed when its key was never shown here: without it the copies "
+                                               "cannot be read back elsewhere")
+
+
+class InstanceDestinationBody(_Model):
+    destination: str = Field(description="A destination the instance may use (GET .../destination lists them): its "
+                                         "backups go there from the next one; \"\": the server's default")
 
 
 class CentralKeyBody(_Model):
