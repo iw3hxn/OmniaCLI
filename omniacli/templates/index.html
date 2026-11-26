@@ -24,10 +24,6 @@
 .last-action .status::before { display: none; }
 @media (max-width: 767.98px) { .stat-row { grid-template-columns: 1fr; } }
 /* Monitoring: the period (UX-008 §6.3), one choice of four */
-.period { display: inline-flex; flex-wrap: wrap; margin: 0 0 12px; border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
-.period button { border: 0; border-radius: 0; box-shadow: none; background: var(--panel); padding: 6px 12px; color: var(--muted); font-weight: var(--fw-semibold); }
-.period button + button { border-left: 1px solid var(--border); }
-.period button[aria-pressed="true"] { background: var(--selected); color: var(--on-selected); }
 .tiles.tiles-4 { grid-template-columns: repeat(4, 1fr); }
 @media (max-width: 991.98px) { .tiles.tiles-4 { grid-template-columns: 1fr 1fr; } }
 .tile-sub { color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18);}

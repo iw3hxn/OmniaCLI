@@ -51,7 +51,9 @@ async def test_token_required(client):
                      # where an instance's backups go off site (AD-016 §16.1)
                      "instance_destination", "set_instance_destination",
                      # the recovery at a minute of a production
-                     "pitr_status", "set_pitr_days", "pitr_enable", "pitr_disable"}
+                     "pitr_status", "set_pitr_days", "pitr_enable", "pitr_disable",
+                     # the monitor of an instance (UX-018), read only
+                     "instance_monitor"}
     # the token reads pages but never acts on them
     assert (await client.get("/jobs", headers=BEARER)).status_code == 200
     assert (await client.post("/servers/srv/test/pull", headers={**BEARER, "Origin": f"http://{HOST}"})).status_code == 403

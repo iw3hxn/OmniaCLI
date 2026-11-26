@@ -24,6 +24,9 @@ SENSITIVE_READS = {
     "/api/servers/{server}/{role}/log": "instance log",
     "/api/servers/{server}/{role}/log/records": "instance log (records, a span of time)",
     "/api/servers/{server}/{role}/database": "database statistics",
+    # the monitor of an instance (UX-018, AD-019): its load and verdict, on the page and through the REST API
+    "/api/servers/{server}/{role}/monitor": "monitor of the instance",
+    "/api/v1/instances/{server}/{role}/monitor": "monitor of the instance (REST API)",
     "/api/servers/{server}/{role}/login-as/users": "users of the instance's database",
     "/api/servers/{server}/production/mail": "caught mail (list)",
     "/api/servers/{server}/production/mail/{mail_id}": "caught mail (message)",
