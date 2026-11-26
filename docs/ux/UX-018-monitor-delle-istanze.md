@@ -163,7 +163,7 @@ Domande per `software-architect`:
 **Dati**: su lab3 `acme-odoo` con database dedicato, `acme-shop` sul cluster della macchina, un'istanza con `db_host` su lab4 e una staging. Uno script di carico porta 1 richiesta su 20 oltre 3 s e il 2% di errori 500.
 **Persone**: P1, P2, P3, P4, nessuna col gruppo developer. 1440×900 e 390×844, IT, tema chiaro e scuro.
 
-1. A riposo un `[role=status]` dice «Sta bene». Sotto carico, entro 2 minuti, dice «Da guardare», con una riga che contiene «1 su 20» e «3 s» e una che contiene «non riesce».
+1. A riposo un `[role=status]` dice «Sta bene». Sotto carico, entro 6 minuti (il log si legge ogni 5 minuti: AD-019, risposta di Carlo), dice «Da guardare», con una riga che contiene «1 su 20» e «3 s» e una che contiene «non riesce».
 2. Le tile sono esattamente 4, e ogni sottotitolo contiene un numero o una soglia.
 3. Al primo carico il segmento premuto è «24 ore». «7 giorni» cambia i sottotitoli delle tile e non il verdetto; dopo un reload resta «7 giorni».
 4. A riposo i `details[open]` sono 0. Con la causa memoria, Carico è `[open]`.
