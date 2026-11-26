@@ -155,6 +155,8 @@ ROUTES = {
         ("GET", "/jobs"), ("GET", "/jobs/{job_id}"), ("GET", "/api/jobs"), ("GET", "/api/jobs/{job_id}"),
         ("GET", "/servers/{server}"), ("GET", "/api/servers/{server}/{role}/summary"),
         ("GET", "/api/servers/{server}/{role}/uptime"), ("GET", "/api/workspaces/{workspace}/load"),
+        # the monitor of an instance (UX-018): its verdict, tiles and load, as every person of it reads them
+        ("GET", "/api/servers/{server}/{role}/monitor"), ("GET", "/api/v1/instances/{server}/{role}/monitor"),
         ("GET", "/api/servers/{server}/{role}/backups"), ("GET", "/instances"), ("GET", "/api/instances"),
         ("GET", "/backups"), ("GET", "/api/backups"), ("GET", "/api/map"),
         # the list of its workspaces (UX-013 §A): those where it is admin, checked in the route

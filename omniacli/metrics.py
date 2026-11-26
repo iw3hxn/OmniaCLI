@@ -14,7 +14,8 @@ The machine as a whole is sampled too: its CPU from /proc/stat (percent of all
 cores, iowait counted as idle), with the share of it that PostgreSQL and
 each instance use (percent of the whole machine too, so they are drawn on
 its chart): PostgreSQL on its cgroup, every cluster together (Debian's
-system-postgresql.slice, else the postgresql*.service units), an instance as
+system-postgresql.slice, else the postgresql*.service units, and the
+machine's own cluster in omniacli_machine_db.slice), an instance as
 above (an instance whose processes cannot be found has no share). Its
 network traffic comes from /proc/net/dev,
 summed over the interfaces of a real device (/sys/class/net/<name>/device):
@@ -29,6 +30,16 @@ traffic on the bridges of its projects' networks (their /24s, which the root
 helper reads from their .env): what a bridge sends is what the workspace's
 containers receive, what it receives is what they send. Traffic between the
 containers of one project stays on the bridge and is not counted.
+
+For the monitor of an instance (AD-019) each point also carries its Odoo and
+its database apart: ocpu/omem and dcpu/dmem (a compose project's services by
+their compose label, the anonymous memory of each container; a systemd or
+process instance is all Odoo, its database is the machine's PostgreSQL or
+another machine's), and conns, the connections established now on its HTTP
+port, from one ``ss -Htn state established`` for every instance (slice 0:
+/proc/net/tcp lists the TIME_WAIT too, 15,903 lines at 195 requests a
+second). The machine's point carries pg_mem, the anonymous memory of every
+PostgreSQL cluster together.
 """
 
 from __future__ import annotations
@@ -175,9 +186,11 @@ def slice_counters(base: Path) -> tuple[float, int] | None:
 
 
 # PostgreSQL's cgroups, tried in this order: Debian's slice of every cluster
-# (postgresql@<version>-<cluster>.service), else the units of other systems
+# (postgresql@<version>-<cluster>.service), else the units of other systems;
+# and the machine's own cluster (machinedb.SLICE), counted with either
 POSTGRES_SLICE = "system.slice/system-postgresql.slice"
 POSTGRES_UNITS = "system.slice/postgresql*.service"
+MACHINE_DB_SLICE = "omniacli_machine_db.slice"
 
 
 def cgroup_cpu(base: Path) -> float | None:
@@ -189,14 +202,52 @@ def cgroup_cpu(base: Path) -> float | None:
 
 
 def postgres_cpu(root: Path | None = None) -> float | None:
-    """CPU seconds PostgreSQL used so far, every cluster together; None:
+    """CPU seconds PostgreSQL used so far, every cluster together (the
+    system's and the machine's own, in omniacli_machine_db.slice); None:
     no PostgreSQL service here."""
     root = CGROUP_ROOT if root is None else root
     used = cgroup_cpu(root / POSTGRES_SLICE)
-    if used is not None:
+    if used is None:
+        units = [u for u in (cgroup_cpu(path) for path in root.glob(POSTGRES_UNITS)) if u is not None]
+        used = sum(units) if units else None
+    machine = cgroup_cpu(root / MACHINE_DB_SLICE)
+    if machine is None:
         return used
-    units = [u for u in (cgroup_cpu(path) for path in root.glob(POSTGRES_UNITS)) if u is not None]
-    return sum(units) if units else None
+    return machine + (used or 0.0)
+
+
+def anon_memory(base: Path) -> int | None:
+    """The anonymous memory of a cgroup in bytes (memory.current counts the
+    file cache too); None: not there."""
+    text = _read(base / "memory.stat")
+    if text is None:
+        return None
+    return next((int(line.split()[1]) for line in text.splitlines() if line.startswith("anon ")), 0)
+
+
+def postgres_memory(root: Path | None = None) -> int | None:
+    """The anonymous memory of every PostgreSQL cluster together, bytes;
+    None: no PostgreSQL service here."""
+    root = CGROUP_ROOT if root is None else root
+    found = [anon_memory(root / POSTGRES_SLICE), anon_memory(root / MACHINE_DB_SLICE)]
+    if found[0] is None:
+        found += [anon_memory(path) for path in root.glob(POSTGRES_UNITS)]
+    found = [f for f in found if f is not None]
+    return sum(found) if found else None
+
+
+def established_by_port(text: str) -> dict[int, int]:
+    """{local port: connections} of ``ss -Htn state established``'s lines
+    (Recv-Q Send-Q Local Peer)."""
+    found: dict[int, int] = {}
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        _, _, port = parts[2].rpartition(":")
+        if port.isdigit():
+            found[int(port)] = found.get(int(port), 0) + 1
+    return found
 
 
 def bridge_counters(interfaces: list[str], net: Path = NET_ROOT) -> tuple[int, int]:
@@ -230,6 +281,8 @@ class Sampler:
         self._cgroup: dict[str, tuple[float, str | None]] = {}
         # {instance key: (when asked, its running containers' ids)}: a compose project's
         self._containers: dict[str, tuple[float, list[str]]] = {}
+        # {container id: its compose service}, as the helper's state said it
+        self._services: dict[str, str] = {}
         self._prev: dict[str, tuple[float, object]] = {}
         self._task: asyncio.Task | None = None
         self.cores = os.cpu_count() or 1
@@ -277,9 +330,15 @@ class Sampler:
                                                                        if line.startswith("{")]
             except ValueError:
                 rows = []
-            ids = [str(r.get("ID") or "") for r in rows if isinstance(r, dict) and r.get("State") == "running"
-                   and r.get("ID")]
+            running = [r for r in rows if isinstance(r, dict) and r.get("State") == "running" and r.get("ID")]
+            ids = [str(r["ID"]) for r in running]
+            for r in running:
+                self._services[str(r["ID"])] = str(r.get("Service") or "")
         self._containers[instance.key] = (time.monotonic(), ids)
+        # the services of containers no instance runs any more go (a container made again has a new id)
+        alive = {i for _, found in self._containers.values() for i in found}
+        for gone in [i for i in self._services if i not in alive]:
+            del self._services[gone]
         return ids
 
     async def _unit_cgroup(self, instance: Instance) -> str | None:
@@ -320,6 +379,10 @@ class Sampler:
         point["ram"], point["ram_total"] = memory if memory else (None, None)
         if pg is not None and pg_previous is not None and now > pg_previous[0]:
             point["pg"] = self._share(max(pg - pg_previous[1], 0) / (now - pg_previous[0]) * 100)
+        # every cluster's anonymous memory, MiB (None: no PostgreSQL here): the monitor of an instance on a shared
+        # cluster draws it for the machine's admins
+        pg_mem = postgres_memory()
+        point["pg_mem"] = round(pg_mem / 1048576, 1) if pg_mem is not None else None
         self.machine.append(point)
         return point
 
@@ -391,9 +454,11 @@ class Sampler:
         by_config, cgroups = None, None
         now = time.monotonic()
         keys = set()
+        conns = await self.connections() if instances else None
         for inst in instances:
             keys.add(inst.key)
             point = None
+            parts = None  # a compose project's Odoo ("o") and database ("d") apart: (cpu seconds, bytes)
             if inst.restart.type == "systemd":
                 group = await self._unit_cgroup(inst)
                 base = CGROUP_ROOT / group.lstrip("/") if group else None
@@ -410,9 +475,10 @@ class Sampler:
                 if ids:
                     if cgroups is None:
                         cgroups = await asyncio.to_thread(container_cgroups)
-                    used = [cgroup_usage(CGROUP_ROOT / path.lstrip("/"))
-                            for full, path in cgroups.items() if any(full.startswith(i) for i in ids)]
+                    mine = {full: path for full, path in cgroups.items() if any(full.startswith(i) for i in ids)}
+                    used = [cgroup_usage(CGROUP_ROOT / path.lstrip("/")) for path in mine.values()]
                     used = [u for u in used if u is not None]
+                    parts = self._parts(inst, ids, mine)
                     if used:
                         point = self._point(inst.key, now, sum(u[0] for u in used), sum(u[1] for u in used),
                                             sum(u[2] for u in used))
@@ -429,6 +495,9 @@ class Sampler:
                 if config is None:
                     # nothing measured: no share on the machine's chart
                     point["cpu"] = None
+            self._split(inst, now, point, parts)
+            port = inst.plugin.web_port(inst) if inst.plugin is not None else None
+            point["conns"] = conns.get(port, 0) if conns is not None and port else None
             self.history.setdefault(inst.key, deque(maxlen=HISTORY)).append(point)
             if machine is not None and point["cpu"] is not None:
                 machine.setdefault("instances", {})[inst.key] = self._share(point["cpu"])
@@ -436,7 +505,60 @@ class Sampler:
             if key not in keys:  # the server was removed or set to draft
                 self.history.pop(key, None)
                 self._prev.pop(key, None)
+                self._prev.pop(key + "#o", None)
+                self._prev.pop(key + "#d", None)
+                self._containers.pop(key, None)
                 self.source.pop(key, None)
+
+    async def connections(self) -> dict[int, int] | None:
+        """{local port: connections established now}, one ss for every
+        instance; None: ss did not answer."""
+        try:
+            code, out = await ops.capture(["ss", "-Htn", "state", "established"], timeout=10)
+        except Exception:  # noqa: BLE001 - no ss: the busy workers are not measured
+            return None
+        return established_by_port(out) if code == 0 else None
+
+    def _parts(self, inst: Instance, ids: list[str], cgroups: dict[str, str]) -> dict[str, tuple[float, int]] | None:
+        """(CPU seconds, anonymous bytes) of a compose project's Odoo ("o")
+        and of its own database ("d"), by the compose service of each
+        container; None: the services are not known."""
+        odoo = getattr(inst.options, "odoo_service", "odoo")
+        db = getattr(inst.options, "db_service", "db")
+        found: dict[str, list] = {}
+        for full, path in cgroups.items():
+            service = next((self._services.get(i) for i in ids if full.startswith(i)), None)
+            part = "o" if service == odoo else "d" if service == db and db != "machine" else None
+            if part is None:
+                continue
+            base = CGROUP_ROOT / path.lstrip("/")
+            cpu = cgroup_cpu(base)
+            if cpu is None:
+                continue
+            total = found.setdefault(part, [0.0, 0])
+            total[0] += cpu
+            total[1] += anon_memory(base) or 0
+        return {k: (v[0], int(v[1])) for k, v in found.items()} if found else None
+
+    def _split(self, inst: Instance, now: float, point: dict, parts: dict | None) -> None:
+        """ocpu/omem (Odoo) and dcpu/dmem (its own database) of the point:
+        percent of one core and MiB; a systemd or process instance is all
+        Odoo; None: not measured apart."""
+        point.update(ocpu=None, omem=None, dcpu=None, dmem=None)
+        if parts is None:
+            if inst.restart.type != "compose":
+                point.update(ocpu=point["cpu"], omem=point["mem"] if point["cpu"] is not None else None)
+            return
+        for part in ("o", "d"):
+            if part not in parts:
+                self._prev.pop(f"{inst.key}#{part}", None)
+                continue
+            cpu, memory = parts[part]
+            previous = self._prev.get(f"{inst.key}#{part}")
+            self._prev[f"{inst.key}#{part}"] = (now, cpu)
+            if previous is not None and now > previous[0]:
+                point[part + "cpu"] = round(max(cpu - previous[1], 0) / (now - previous[0]) * 100, 1)
+            point[part + "mem"] = round(memory / 1048576, 1)
 
     def _point(self, key: str, now: float, cpu, memory: int, procs: int) -> dict:
         """cpu: seconds used so far (cgroup) or {pid: seconds} (processes)."""

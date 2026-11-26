@@ -10,7 +10,8 @@
    where a point has no value or the next point is more than gap seconds
    away: a time OmniaCLI was not running is a gap, never a zero. opts.from
    and opts.to fix the time axis (the whole period, also before the first
-   point); opts.when(t) writes a time of the axis and of the tooltip. #}
+   point); opts.when(t) writes a time of the axis and of the tooltip.
+   opts.rules: horizontal lines across the whole chart, [{value, cls}] (a threshold, a limit granted). #}
 <script>
 const OmniaCharts = (function () {
   const NS = "http://www.w3.org/2000/svg";
@@ -58,7 +59,8 @@ const OmniaCharts = (function () {
     const t0 = opts.from || data[0].t, t1 = opts.to || data[data.length - 1].t;
     const axisTime = opts.when || hhmm, tipTime = opts.when || hhmmss;
     const lines = opts.lines || [];
-    const max = niceMax(Math.max(opts.minMax || 0, ...keys.flatMap((k) => data.map((p) => p[k] || 0)),
+    const rules = opts.rules || [];
+    const max = niceMax(Math.max(opts.minMax || 0, ...rules.map((r) => r.value || 0), ...keys.flatMap((k) => data.map((p) => p[k] || 0)),
                                  ...lines.flatMap((l) => data.map((p) => l.value(p) || 0))));
     const x = (t) => pad.l + (t1 === t0 ? 0 : (t - t0) / (t1 - t0)) * (W - pad.l - pad.r);
     const y = (v) => H - pad.b - (v / max) * (H - pad.t - pad.b);
@@ -76,6 +78,9 @@ const OmniaCharts = (function () {
         label.textContent = axisTime(t);
         svg.appendChild(label);
       }
+    }
+    for (const r of rules) {
+      svg.appendChild(el("line", {x1: pad.l, x2: W - pad.r, y1: y(r.value), y2: y(r.value), class: `chart-line ${r.cls}`}));
     }
     // the runs of points of a line: one only, unless a history breaks it (opts.gap)
     const runs = (value) => {

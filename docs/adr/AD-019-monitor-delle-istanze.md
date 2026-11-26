@@ -52,7 +52,7 @@ Stato: **deciso** (le risposte di Carlo in fondo). Risponde a UX-018 §9 e alle 
 |---|---|---|---|---|
 | CPU, memoria Odoo | cgroup dei contenitori del servizio Odoo, unità o processi | 5 s | sì | sì |
 | CPU, memoria, OOM del database | cgroup e `memory.events` del servizio `db` | 5 s | solo P1, la slice intera | no, con la frase |
-| Worker occupati (`workers` > 0) | connessioni `ESTABLISHED` sulla porta HTTP (`/proc/net/tcp`); nginx chiude dopo ogni richiesta (HTTP/1.0) | 5 s | sì | sì |
+| Worker occupati (`workers` > 0) | connessioni `ESTABLISHED` sulla porta HTTP, da una sola chiamata `ss -Htn state established` per tutte le porte (non `/proc/net/tcp`: fetta 0); nginx chiude dopo ogni richiesta (HTTP/1.0) | 5 s | sì | sì |
 | Risponde | i controlli di `monitor.py`, nel punto | 1 min | sì | sì |
 | Richieste, 5xx, tempi, pagine, log | log di Odoo (19.2) | 5 min; 1 min con la scheda aperta | sì | sì |
 | Posta, spazio | 19.3, 19.4 | 5 min, 1 giorno | sì | sì |
@@ -66,7 +66,7 @@ Mediana e «1 su 20» di un periodo vengono da un istogramma di 12 classi per pu
 - **Rotazione**: prima si finisce il vecchio inode (`.1`, o la data di `logrotate = True`), poi si legge il nuovo da 0. Un file già compresso è un buco dichiarato.
 - **Dopo un fermo**: il log si recupera dal cursore (al più 20 MB per giro); CPU e memoria restano un buco.
 - **Righe contate**:
-  - `werkzeug`: `/xmlrpc/`, `/jsonrpc`, `/json/2/`;
+  - le righe d'accesso: logger `werkzeug` in 16-19, `odoo.http.server` in 20 (fetta 0); `/xmlrpc/`, `/jsonrpc`, `/json/2/`;
   - ERROR e WARNING;
   - «virtual memory limit» e «Server memory limit»;
   - «tries left»;
@@ -107,10 +107,23 @@ Un punto al giorno alle 05:00, dopo i backup:
 ### 19.7: Le domande di UX-018
 
 1. **Chi legge il log.** Di una venv, OmniaCLI dal file. Di un'istanza spostata (AD-014), l'host dove gira Odoo, e la casa mostra la scheda da `/placed/<server>`. Un'istanza compose ha sempre il log di Docker; la frase «non scrive un file» vale solo per una venv su stdout o nel journal.
-2. **Il costo per 20 istanze.** Una chiamata ≈ 0,3 s di CPU (0,1 s di avvio del helper misurato, il resto stimato). 20 × 0,3 s ogni 300 s fanno ≈ 2% di un core, leggendo solo i byte nuovi.
+2. **Il costo per 20 istanze.** Una lettura del log ≈ 0,13 s di CPU (misurato, fetta 0: 0,10-0,12 s di avvio del helper, 16 ms per 64 KB da un offset). 20 × 0,13 s ogni 300 s fanno ≈ 0,9% di un core, leggendo solo i byte nuovi.
 3. **La storia di un'istanza che si sposta.** La segue, nel delta finale del Completa, nel ritorno e nella consegna (≤ 5 MB).
 
 ---
+
+## Misure della fetta 0 (26/11/2026, lab3)
+
+Misurato su lab3 (16 core, Docker 28, Odoo 19.0 `odoo:19.0`), su `acme-zipt-stg-20261122` portata a `workers = 4` per la prova e rimessa a 0 dopo. Sui lab c'è solo Odoo 19: per 16-18 e 20 vale la lettura dei sorgenti (`netsvc.py`; in 20 `odoo/http/server_log.py`).
+
+- **Le righe d'accesso, vere (19)**: `2026-11-26 15:14:15,459 14 INFO zipt_stg_20261122 werkzeug: 10.213.4.1 - - [26/Nov/2026 15:14:15] "POST /web/webclient/version_info HTTP/1.1" 200 - 2 0.002 0.010`. Tre campi di tempo (query, tempo SQL, il resto) su `/web/login`, JSON-RPC, XML-RPC e un 404; il quarto (`cursor_mode`, 18 e 19) compare solo dove una richiesta l'ha impostato, e su queste route mai. La richiesta senza database porta `None` al posto del nome.
+- **Odoo 20 cambia logger** (sorgenti di ottobre 2026): la riga è di `odoo.http.server`, non di `werkzeug`, e porta sempre quattro campi (`cursor_mode` vale `-`). Il lettore della fetta 2 accetta tutti e due: **corretto in 19.2**.
+- **XML-RPC in 19 scrive un avviso a ogni chiamata** («Mute this logger: --log-handler odoo.addons.rpc.controllers.xmlrpc:ERROR»): nella fetta 2 i WARNING di quel logger non si contano fra gli avvisi, solo fra le chiamate dalle API.
+- **Byte di log**: ≈ 216 byte per richiesta nel json-file di Docker (785.394 byte per 3.637 richieste). Un'istanza ferma, con il solo controllo del monitor, scrive ≈ 670 KB al giorno (1.047.639 byte in 37,7 ore). 50.000 richieste al giorno ≈ 11 MB; il json-file ruota a 50 MB × 5: finendo il vecchio file a ogni giro, si perdono righe solo con più di 200 MB in 5 minuti (≈ 900.000 richieste), un caso che non c'è.
+- **Il costo del helper**: `compose-helper … state` (con `docker compose ps`) 0,35-0,43 s, ≈ 0,4 s di CPU; avvio di Python e import del helper 0,10-0,12 s; 64 KB letti da un offset 16 ms. Una lettura del log per offset costa ≈ 0,13 s: **corretto in 19.7.2** (≈ 0,9% di un core per 20 istanze, non 2%).
+- **Connessioni sotto carico, 4 worker** (`/web/login`, 20 s per prova): le `ESTABLISHED` sulla porta pubblicata (il lato del proxy di Docker) seguono le richieste in corso, code comprese: 2 client → 2 (mediana), 4 → 4, 8 → 10, 16 → 19; ≈ 195 richieste al secondo con 4 worker. Il lato verso il contenitore (porta 8069) non compare nella tabella della macchina: si conta la porta pubblicata. Quindi worker occupati = min(connessioni, `workers`), e «tutti occupati» quando le connessioni sono almeno `workers`.
+- **`/proc/net/tcp` costa troppo sotto carico**: a 195 richieste al secondo ha 15.903 righe (le `TIME_WAIT`); leggerlo costa 45 ms da solo e fino a 440 ms in un processo carico. `ss -Htn state established` filtra nel kernel: 29 ms a chiamata. **Corretto in 19.1**: una chiamata `ss` ogni 5 s per tutte le istanze, contata per porta.
+- **Il cluster della macchina**: il campionatore leggeva `system-postgresql.slice`, il cluster è in `omniacli_machine_db.slice` (`machinedb.SLICE`): corretto nella fetta 1.
 
 ## 8. Vincoli per il dev-lead
 
@@ -158,9 +171,9 @@ In tutto ≈ 10,5 g. Le fette 1-2 (6,5 g) rispondono a «sta bene? se no, perch�
 
 ## Non verificato
 
-- Che le connessioni su `127.0.0.1:<porta>` si vedano in `/proc/net/tcp` con il proxy di Docker sul lab.
 - Che un worker ucciso da `limit_time_real` lasci una riga ERROR. Senza `werkzeug`, «non riuscite» lo perde; oltre l'1% si riapre C.
-- 2,2 MB e 2% di un core: stime.
+- 2,2 MB: stima (il costo del log è misurato, fetta 0).
+- Le righe d'accesso di 16, 17 e 18 su un'istanza vera: sui lab c'è solo la 19; per 16-18 vale la lettura dei sorgenti.
 
 ## 11. Scartate
 

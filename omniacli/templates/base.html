@@ -405,6 +405,11 @@ button.small, .button.small { min-height: var(--control-h-sm); padding: var(--sp
 .tile-label { color: var(--muted); font-size: var(--fs-12); font-weight: var(--fw-regular); line-height: var(--lh-18);}
 .tile-value { font-size: var(--fs-24); font-weight: var(--fw-bold); letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: var(--lh-32);}
 .chart-title { font-size: var(--fs-14); font-weight: var(--fw-semibold); margin: 12px 0 4px; line-height: var(--lh-20);}
+/* the segments of a period (UX-017 .period): the Dashboard's and an instance's Monitoring */
+.period { display: inline-flex; flex-wrap: wrap; margin: 0 0 12px; border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; }
+.period button { border: 0; border-radius: 0; box-shadow: none; background: var(--panel); padding: 6px 12px; color: var(--muted); font-weight: var(--fw-semibold); }
+.period button + button { border-left: 1px solid var(--border); }
+.period button[aria-pressed="true"] { background: var(--selected); color: var(--on-selected); }
 .chart-box { position: relative; }
 svg.chart { width: 100%; height: 160px; display: block; }
 svg.spark { width: 160px; height: 28px; display: block; }

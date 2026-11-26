@@ -165,6 +165,7 @@ from .logtail import read_since
 from .metrics import Sampler
 from . import metricshistory
 from .metricshistory import MetricsHistory, MetricsRecorder
+from . import instancemonitor
 from .scheduler import AutoUpdater
 from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore, device
 from .sessions import _digest as _digest_session, sid
@@ -435,6 +436,8 @@ WORKSPACE_ROUTES = frozenset({
     "/servers/{server}/{role}/pull", "/servers/{server}/{role}/pull-restart",
     "/api/servers/{server}/{role}/pull-preview", "/api/servers/{server}/{role}/summary",
     "/api/servers/{server}/{role}/uptime", "/api/workspaces/{workspace}/notify",
+    # the monitor of an instance (UX-018): its page's tab, and the same through the REST API
+    "/api/servers/{server}/{role}/monitor", "/api/v1/instances/{server}/{role}/monitor",
     "/api/servers/{server}/{role}/database", "/api/servers/{server}/{role}/database/terminate",
     "/servers/{server}/{role}/restart", "/servers/{server}/{role}/start", "/servers/{server}/{role}/stop",
     "/servers/{server}/{role}/backup", "/api/servers/{server}/{role}/backups",
@@ -759,6 +762,12 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # the machine's load, a point every 5 minutes for 14 days, next to the disks' history
     load_history = MetricsHistory(settings.jobs_dir.parent / "load_history.json")
     load_recorder = MetricsRecorder(sampler, load_history)
+    # each instance's load, a point every 5 minutes for 14 days (AD-019 slice 1): the productions and the stagings
+    # (the productions of their own servers), their checks from the monitor, defined further down
+    instance_history = instancemonitor.InstanceHistory(settings.jobs_dir.parent / instancemonitor.FOLDER)
+    instance_recorder = instancemonitor.InstanceRecorder(
+        sampler, instance_history, checks=lambda key: (monitor.instances.get(key) or {}).get("checks") or [],
+        measured=lambda key: key.endswith("/production"))
     link_clients = LinkClients(link_transport)
     # the links through SSH: their ssh -L, and OmniaCLI's key, next to the links file
     ssh_tunnels = sshlinks.SshTunnels((settings.links_file or settings.servers_file).parent / "ssh")
@@ -1689,6 +1698,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "offsite": lambda *a, **k: offsite_act(*a, **k),
                                              # the recovery at a minute of a production: the pages' code
                                              "pitr": lambda *a, **k: pitr_act(*a, **k),
+                                             # the monitor of an instance (UX-018): the pages' code
+                                             "monitor": lambda *a, **k: instance_monitor_view(*a, **k),
                                              # a machine behind NAT and its central panel (AD-017 §17.6)
                                              "agent_relay": lambda *a, **k: api_hooks["agent_relay"](*a, **k),
                                              "link_relay": lambda *a, **k: api_hooks["link_relay"](*a, **k),
@@ -1741,6 +1752,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         catalog_tasks.append(asyncio.get_running_loop().create_task(catalog_loop()))
         disk_recorder.start()
         load_recorder.start()
+        instance_recorder.start()
         tunnels.start()
         ssh_tunnels.sync(settings.link_targets)
         pullers.start()
@@ -1759,7 +1771,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for what, stop in (("consumers", consumers.stop), ("publications", publications.stop),
                            ("pullers", pullers.stop), ("tunnels", tunnels.stop), ("ssh tunnels", ssh_tunnels.close),
                            ("disk history", disk_recorder.stop), ("load history", load_recorder.stop),
-                           ("load sampler", sampler.stop),
+                           ("instances' history", instance_recorder.stop), ("load sampler", sampler.stop),
                            ("monitor", monitor.stop), ("point-in-time recovery", stop_pitr),
                            ("planned database restarts", stop_postgres),
                            ("the look at the read replicas", lambda: stop_replicas()),
@@ -1793,6 +1805,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.sampler = sampler
     app.state.disk_history, app.state.disk_recorder = disk_history, disk_recorder
     app.state.load_history, app.state.load_recorder = load_history, load_recorder
+    app.state.instance_history, app.state.instance_recorder = instance_history, instance_recorder
     app.state.access_log = access_log
     app.state.tunnels = tunnels
     app.state.ssh_tunnels = ssh_tunnels
@@ -3893,6 +3906,72 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         its uptime over the last day, its last answer time."""
         return monitor.view(get_instance(server, role).key)
 
+    # --- the monitor of an instance (UX-018, AD-019 slice 1): one function for the page, the REST API and MCP
+
+    # {instance key: (when read, the causes of its database's verdict)}: read again after 5 minutes at most
+    monitor_database_seen: dict[str, tuple[float, list]] = {}
+    # {instance key: (when read, its workers)}
+    monitor_workers_seen: dict[str, tuple[float, int | None]] = {}
+
+    async def monitor_database(instance: Instance) -> list[dict]:
+        """The causes of its database's verdict (UX-006 D4), read at most once in 5 minutes; none when its
+        statistics cannot be read (the Database section says why)."""
+        found = monitor_database_seen.get(instance.key)
+        if found and time.time() - found[0] < instancemonitor.BUCKET:
+            return found[1]
+        try:
+            causes = instancemonitor.database_causes(await asyncio.wait_for(pgreport.report(instance), 15))
+        except (JobFailed, asyncio.TimeoutError, OSError, ValueError):
+            causes = []
+        monitor_database_seen[instance.key] = (time.time(), causes)
+        return causes
+
+    def monitor_workers(instance: Instance) -> int | None:
+        found = monitor_workers_seen.get(instance.key)
+        if found and time.time() - found[0] < 60:
+            return found[1]
+        workers = instancemonitor.workers_of(instance, workspacehelper.role_state)
+        monitor_workers_seen[instance.key] = (time.time(), workers)
+        return workers
+
+    def monitor_where(instance: Instance) -> tuple[str, str | None]:
+        """Where its database is (instancemonitor.where_kind) and, on another machine, its host."""
+        if instance.restart.type == "compose" or instance.plugin is None:
+            return instancemonitor.where_kind(instance, None), None
+        shell = instance.plugin.db_shell(instance)
+        place = pgreport.where(instance, shell[1]) if shell else None
+        kind = instancemonitor.where_kind(instance, place)
+        return kind, (place or {}).get("host") if kind == "remote" else None
+
+    async def instance_monitor_view(instance: Instance, period: str, customer: bool) -> dict:
+        """The monitor of an instance over a period (instancemonitor.build); customer: a workspace's people
+        (no shared PostgreSQL, no host)."""
+        state = monitor.view(instance.key)
+        ws_name = settings.workspace_of(instance.server)
+        ws = settings.workspaces.get(ws_name) if ws_name else None
+        limits = ws.limits if ws is not None else {}
+        memory = limits.get("memory_gb")
+        where, host = monitor_where(instance)
+        database = await monitor_database(instance) if state.get("state") == "up" else []
+        return instancemonitor.build(
+            instance, period, sampler=sampler, history=instance_history, state=state,
+            checks=(monitor.instances.get(instance.key) or {}).get("checks") or [],
+            thresholds=settings.options.monitor_thresholds, minutes=settings.options.monitor_minutes,
+            cores=limits.get("cpus") or sampler.cores, memory_limit=round(memory * 1024) if memory else None,
+            workers=monitor_workers(instance), database=database, where=where, host=host,
+            workspace=list(sampler.workspaces.get(ws_name, ())) if ws_name else None, customer=customer)
+
+    @app.get("/api/servers/{server}/{role}/monitor")
+    async def instance_monitor(request: Request, server: str, role: str,
+                               period: str = instancemonitor.DEFAULT_PERIOD):
+        """The monitor of an instance (UX-018): the verdict on now with its causes, the four tiles and the load
+        over the period (1h, 24h, 7d or 14d); a workspace's people never read the machine's shared PostgreSQL nor a
+        host."""
+        instance = get_instance(server, role)
+        if period not in instancemonitor.PERIODS:
+            return refuse(f"The period is one of {', '.join(instancemonitor.PERIODS)}")
+        return await instance_monitor_view(instance, period, customer_view(request) is not None)
+
     @app.post("/api/workspaces/{workspace}/notify", dependencies=[Depends(admin)])
     async def workspace_notify(workspace: str, payload: dict = Body(...)):
         """Whom the monitor tells when an instance of the workspace goes down."""
@@ -5296,6 +5375,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if old == new:
             return None
         await offsite_renamed(old, new)
+        monitor_renamed(old, new)
         async with workspaces_lock:
             changed = {}
             for ws in settings.workspaces.values():
@@ -5307,6 +5387,20 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             if changed == settings.workspaces:
                 return None
             return await store_workspaces(changed)
+
+    def monitor_renamed(old: str | None, new: str | None) -> None:
+        """An instance's monitor follows its server's name (AD-019): its 14 days of history and the monitor's checks
+        move with a rename, go with a delete, and a server made with a name of before starts with none of them."""
+        try:
+            instance_history.renamed(old, new)
+        except (OSError, ValueError) as exc:
+            _logger.warning("The monitor's history of %s did not follow it to %s: %s", old, new, exc)
+        moved = {}
+        for key in [k for k in monitor.instances if k.partition("/")[0] in (old, new)]:
+            entry = monitor.instances.pop(key)
+            if old is not None and new is not None and key.partition("/")[0] == old:
+                moved[f"{new}/{key.partition('/')[2]}"] = entry
+        monitor.instances.update(moved)
 
     async def offsite_renamed(old: str | None, new: str | None) -> None:
         """Where the backups of a server go follows its name (AD-016 §16.1): renamed, its choices are the new name's;
@@ -33506,6 +33600,24 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # --- the recovery at a minute of a workspace's production: the pages' code (pitr_act), the same answers; a
     # change on a production by hand only (apiguard.production_refusal: the admin role, never a CI token, confirm =
     # the server's name to switch it on or off)
+
+    @api_router.get(P + "/instances/{server}/{role}/monitor", summary="Read the monitor of an instance",
+                    description="Whether it is well now (verdict: good, look with its causes, down, stopped, none), "
+                                "the four tiles over the period (answered: percent of the monitor's checks; the "
+                                "response time and the failed requests: null with their reason until they are read "
+                                "from Odoo's log; memory: its maximum against what is granted) and its load "
+                                "(load.points: Odoo and its own database apart, CPU in percent of the cores granted, "
+                                "memory in MiB). period: 1h, 24h (the default), 7d or 14d. A workspace's token never "
+                                "reads the machine's PostgreSQL shared by every database nor a host.")
+    async def api_instance_monitor(server: str = PathParam(description="The server's name"),
+                                   role: str = PathParam(description="production or test"),
+                                   period: str = Query(instancemonitor.DEFAULT_PERIOD,
+                                                       description="1h, 24h (the default), 7d or 14d"),
+                                   me: Principal = Depends(api_token)):
+        inst = api_instance(me, server, role)
+        if period not in instancemonitor.PERIODS:
+            raise ApiError(400, "invalid_request", f"The period is one of {', '.join(instancemonitor.PERIODS)}")
+        return await instance_monitor_view(inst, period, me.scoped)
 
     def api_pitr_instance(me: Principal, server: str, role: str) -> Instance:
         if role != "production":

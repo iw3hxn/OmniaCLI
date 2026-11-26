@@ -144,6 +144,8 @@ case "$1" in
         rm -f /var/lib/omniacli/placements.json /var/lib/omniacli/placements.json.tmp \
             /var/lib/omniacli/hosted-workspaces.json /var/lib/omniacli/hosted-workspaces.json.tmp \
             /var/lib/omniacli/placed-jobs.json /var/lib/omniacli/placed-jobs.json.tmp
+        # each instance's monitor, a file a day of its 5-minute points (instancemonitor.py, AD-019)
+        rm -rf /var/lib/omniacli/monitor
         # the copies of Odoo Enterprise root kept for the instances (enterprise.py)
         rm -rf /var/lib/omniacli-enterprise
         # the templates installed from the download server (the instances

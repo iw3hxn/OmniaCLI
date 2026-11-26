@@ -501,10 +501,11 @@ async def test_metrics_api(client, env):
     data = (await client.get("/api/metrics?server=srv", headers={"Authorization": AUTH})).json()
     assert set(data["instances"]) == {"srv/production", "srv/test"} and data["cores"] >= 1
     point = data["instances"]["srv/test"]["points"][-1]
-    assert set(point) == {"t", "cpu", "mem", "procs"}
+    # with its Odoo and its database apart and the connections on its port (AD-019): the monitor of an instance
+    assert set(point) == {"t", "cpu", "mem", "procs", "ocpu", "omem", "dcpu", "dmem", "conns"}
     machine = data["machine"][-1]
     # the shares: PostgreSQL's (None where there is none), the instances measured
-    assert set(machine) - {"instances"} == {"t", "cpu", "pg", "rx", "tx", "ram", "ram_total"} and 0 <= machine["cpu"] <= 100
+    assert set(machine) - {"instances"} == {"t", "cpu", "pg", "pg_mem", "rx", "tx", "ram", "ram_total"} and 0 <= machine["cpu"] <= 100
     only = (await client.get("/api/metrics?machine_only=1", headers={"Authorization": AUTH})).json()
     assert only["instances"] == {} and only["machine"]
     page = (await client.get("/", headers={"Authorization": AUTH})).text

@@ -365,8 +365,8 @@ dialog.sd { --dialog-w: 560px; }
   {% if mail_capture %}<button type="button" role="tab" data-tab="mail" title="{{ _('What Odoo of this staging sent: caught here, it did not leave') }}">{{ _("Mail") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="backups" title="{{ _('The backups of this instance, the automatic ones and the recovery at a minute') }}">{{ _("Backups") }}</button>{% endif %}
   <button type="button" role="tab" data-tab="log" {% if denied.logs %}disabled title="{{ tr(denied.logs) }}"{% else %}title="{{ _('The log of its Odoo, followed live') }}"{% endif %}>{{ _("Log") }}</button>
-  {# Monitoring: the load once it is measured, and the database for who may act (UX-006: five tabs) #}
-  <button type="button" role="tab" data-tab="monitor" {{ '' if db_tab else 'hidden' }} title="{{ _('The load of the instance over the last hour and how its database is') }}">{{ _("Monitoring") }}</button>
+  {# Monitoring: always there (UX-018 D-N3), its verdict even before a chart; the database for who may act #}
+  <button type="button" role="tab" data-tab="monitor" title="{{ _('Whether the instance is well now and, if not, why; its load over a period and how its database is') }}">{{ _("Monitoring") }}</button>
   {# Modules: its code, its updates and the catalog of the OCA (UX-008 §7.3, D1) #}
   {% if can_act %}<button type="button" role="tab" data-tab="modules" title="{{ _('Its repositories of addons, the updates of its code and the catalog of the OCA to add modules from') }}">{{ _("Modules") }}</button>{% endif %}
   {% if can_act %}<button type="button" role="tab" data-tab="settings" title="{{ _('The options of its Odoo and its technical details') }}">{{ _("Settings") }}</button>{% endif %}
@@ -672,23 +672,45 @@ dialog.sd { --dialog-w: 560px; }
 </style>
 {% endif %}
 
-<section class="tab-panel panel instance-charts" data-panel="monitor" hidden>
-  <div class="tiles">
-    <div class="tile"><div class="tile-label">{{ _("CPU now") }}</div><div class="tile-value" data-tile="cpu">–</div><div class="tile-sub" data-tile-sub="cpu"></div></div>
-    <div class="tile"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value" data-tile="mem">–</div><div class="tile-sub" data-tile-sub="mem"></div></div>
-    <div class="tile"><div class="tile-label">{{ _("Processes") }}</div><div class="tile-value" data-tile="procs">–</div><div class="tile-sub">{{ _("of the instance, running now") }}</div></div>
+{# Monitoring (UX-018, AD-019 slice 1): always there; the verdict on now, the period, four tiles over it, then the
+   sections closed (Load; Database for who may act), each opened by a cause that names it #}
+<section class="tab-panel panel mon" data-panel="monitor" hidden data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/monitor"
+         data-key="{{ inst.key }}" data-who="{{ 'machine' if machine_admin else ('customer' if scoped and can_act else ('acts' if can_act else 'reads')) }}">
+  <div class="section-head mon-head">
+    <h2>{{ _("How it is now") }}</h2>
+    <div class="period mon-period" role="group" aria-label="{{ _('Period of the tiles and of the charts') }}">
+      <button type="button" data-period="1h" aria-pressed="false" title="{{ _('The last hour live: a point every 5 seconds') }}">{{ _("1 hour") }}</button>
+      <button type="button" data-period="24h" aria-pressed="true" title="{{ _('The last 24 hours, the night of the backups too: a point every 5 minutes') }}">{{ _("24 hours") }}</button>
+      <button type="button" data-period="7d" aria-pressed="false" title="{{ _('The last 7 days: a point every 5 minutes, grouped') }}">{{ _("7 days") }}</button>
+      <button type="button" data-period="14d" aria-pressed="false" title="{{ _('The last 14 days, all the history kept: a point every 5 minutes, grouped') }}">{{ _("14 days") }}</button>
+    </div>
   </div>
-  <div style="height: 10px"></div>
-  <h3 class="chart-title">{{ _("CPU, % of one core") }} <span class="muted" style="font-weight: var(--fw-regular)">· {{ _("this machine has") }} <span class="cores">?</span></span></h3>
-  <div class="chart-box"><svg class="chart" data-chart="cpu" role="img" aria-label="{{ _('CPU of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
-  <h3 class="chart-title">{{ _("Memory, MiB resident") }}</h3>
-  <div class="chart-box"><svg class="chart" data-chart="mem" role="img" aria-label="{{ _('Memory of {key} over the last hour', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
-</section>
-
-{% if can_act %}
-{% if db_tab %}
-<section class="tab-panel panel" data-panel="monitor" data-section="database" hidden data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/database">
-  <div class="section-head"><h2>{{ _("Database") }}</h2><button type="button" class="small" id="db-reload"
+  {# the verdict on now (the last minutes): it does not follow the period #}
+  <p class="mon-verdict" role="status"><span class="mon-dot"></span><strong class="mon-word">{{ _("Reading the measures…") }}</strong> <span class="muted mon-facts"></span></p>
+  <ul class="mon-causes" hidden></ul>
+  <p class="mon-past" hidden></p>
+  <p class="muted mon-note" hidden></p>
+  <div class="tiles mon-tiles">
+    <div class="tile" data-mon-tile="answered" title="{{ _('The share of the checks of the monitor, one a minute, its login page answered') }}"><div class="tile-label">{{ _("Answers") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
+    <div class="tile" data-mon-tile="response" title="{{ _('How long its pages take, read from the log of Odoo') }}"><div class="tile-label">{{ _("Response time") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
+    <div class="tile" data-mon-tile="failed" title="{{ _('The requests that ended with an error, read from the log of Odoo') }}"><div class="tile-label">{{ _("Failed requests") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
+    <div class="tile" data-mon-tile="memory" title="{{ _('The memory of Odoo and of its own database together now, as the last point of the chart; the limit is the whole workspace’s, its production and its stagings together') }}"><div class="tile-label">{{ _("Memory") }}</div><div class="tile-value">–</div><div class="tile-sub"></div></div>
+  </div>
+  <details class="mon-section" data-mon="load">
+    <summary title="{{ _('The processor and the memory of Odoo and of its database over the period') }}"><span class="mon-title">{{ _("Load") }}</span> <span class="muted mon-line" data-mon-line="load"></span></summary>
+    <p class="muted mon-db-note" hidden></p>
+    <h3 class="chart-title">{{ _("Processor, % of the cores granted") }}</h3>
+    <div class="chart-box"><svg class="chart" data-mon-chart="cpu" role="img" aria-label="{{ _('Processor of {key}', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
+    <div class="chart-legend" data-mon-legend="cpu"></div>
+    <h3 class="chart-title">{{ _("Memory in use") }}</h3>
+    <div class="chart-box"><svg class="chart" data-mon-chart="mem" role="img" aria-label="{{ _('Memory of {key}', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
+    <div class="chart-legend" data-mon-legend="mem"></div>
+  </details>
+  {% if can_act and db_tab %}
+  <details class="mon-section" data-mon="database">
+    <summary title="{{ _('The health of its database: connections, slow queries, what it reads from memory, the largest tables') }}"><span class="mon-title">{{ _("Database") }}</span> <span class="muted mon-line" data-mon-line="database">{{ _("opened, it reads its statistics") }}</span></summary>
+<section class="mon-db" data-section="database" data-api="{{ prefix }}/api/servers/{{ server.name }}/{{ inst.role }}/database">
+  <div class="actions mon-db-actions"><button type="button" class="small" id="db-reload"
     title="{{ _('Reads the statistics of the database again, now. It changes nothing.') }}">{{ icon("restart") }}{{ _("Read again") }}</button></div>
   {# the verdict in one line (UX-006): good, to look at (one line a cause, with its remedy) or not readable #}
   <p class="db-verdict" role="status"><span class="db-dot"></span><strong class="db-word">{{ _("Reading the statistics of its database…") }}</strong> <span class="muted db-facts"></span></p>
@@ -715,19 +737,51 @@ dialog.sd { --dialog-w: 560px; }
     </details>
   </div>
 </section>
+  </details>
+  {% endif %}
+</section>
 <style>
+.mon-head { flex-wrap: wrap; gap: 8px 16px; }
+.mon-head h2 { margin: 0; }
+.mon-period { margin: 0; }
+.mon-period button { min-height: 36px; }
+.mon-verdict { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0 8px; font-size: var(--fs-16); line-height: var(--lh-24); }
+.mon-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); flex: none; }
+.mon-verdict.good .mon-dot { background: var(--ok); } .mon-verdict.look .mon-dot { background: var(--warn); }
+.mon-verdict.down .mon-dot { background: var(--err); } .mon-verdict.down .mon-word { color: var(--err); }
+.mon-facts { font-size: var(--fs-14); line-height: var(--lh-20); }
+.mon-causes { margin: 0 0 12px; padding-left: 20px; font-size: var(--fs-14); line-height: var(--lh-20); }
+.mon-causes li { margin: 0 0 4px; }
+.mon-causes .mon-remedy { color: var(--muted); }
+.mon-past, .mon-note { margin: 0 0 12px; font-size: var(--fs-14); line-height: var(--lh-20); }
+.mon-tiles { grid-template-columns: repeat(4, 1fr); margin: 0 0 12px; }
+.tile-sub { color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18); }
+.mon-section { border-top: 1px solid var(--border); padding: 8px 0; }
+.mon-section > summary { cursor: pointer; padding: 4px 0; }
+.mon-section > summary .mon-title { font-weight: var(--fw-semibold); }
+.mon-line { font-size: var(--fs-14); line-height: var(--lh-20); }
+.mon-db-note { margin: 8px 0; font-size: var(--fs-14); line-height: var(--lh-20); }
+.mon-db-actions { justify-content: flex-end; margin: 4px 0; }
+.chart-line.mon-thr { stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.chart-line.mon-cluster { stroke: var(--cat-7); stroke-dasharray: 3 3; }
+.key.mon-thr { background: var(--warn); } .key.mon-cluster { background: var(--cat-7); }
+@media (max-width: 767.98px) {
+  .mon-tiles { grid-template-columns: repeat(2, 1fr); }
+  .mon-period { display: flex; width: 100%; }
+  .mon-period button { flex: 1; min-height: 44px; padding: 6px 4px; }
+}
 .db-verdict { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; margin: 4px 0 10px; font-size: var(--fs-16); line-height: var(--lh-24);}
 .db-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
 .db-verdict.good .db-dot { background: var(--ok); } .db-verdict.look .db-dot { background: var(--warn); }
 .db-facts { font-size: var(--fs-14); line-height: var(--lh-20);}
 .db-causes { margin: 0 0 12px; padding-left: 20px; }
-.tile-sub { color: var(--muted); font-size: var(--fs-12); margin-top: 2px; line-height: var(--lh-18);}
 .db-details { margin-top: 16px; } .db-details > summary { font-weight: var(--fw-semibold); }
 .db-details h3, .db-slow h3 { margin: 16px 0 6px; font-size: var(--fs-16); line-height: var(--lh-24);}
 .db-where { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; margin: 10px 0 0; }
 .db-where dt { font-weight: var(--fw-semibold); } .db-where dd { margin: 0; }
 </style>
-{% endif %}
+
+{% if can_act %}
 {% if can_act %}{% include "_modules_tab.html" %}{% endif %}
 {% if can_act and stagings and stagings.workspace %}
 {# the repositories of addons of a workspace's instance: each from its URL on its branch, updated (pull) or
@@ -1343,6 +1397,261 @@ dialog.sd { --dialog-w: 560px; }
 {% if restore_file %}{% include "_restore_dialog.html" %}{% endif %}
 {% if login_as or (row_login_as or {}).values() | select | list or (stagings and stagings.elsewhere) %}{% include "_login_as_dialog.html" %}{% endif %}
 {% include "_charts.html" %}
+<script>
+// Monitoring (UX-018): the verdict on now, the tiles and the load over the period chosen; read again every 5 s with
+// 1 hour, every minute otherwise, never while the page or the tab is hidden; no button to read again
+(function () {
+  const box = document.querySelector('.mon[data-panel="monitor"]');
+  if (!box) return;
+  const KEY = "omniacli.instance.period", PERIODS = ["1h", "24h", "7d", "14d"];
+  const who = box.dataset.who;  // machine, customer (a workspace's admin), acts (a developer), reads (a user)
+  const M = {
+    good: {{ _("Is well") | tojson }}, look: {{ _("To look at") | tojson }}, down: {{ _("Does not answer") | tojson }},
+    stopped: {{ _("Stopped") | tojson }}, none: {{ _("No measure yet") | tojson }},
+    goodFacts: {{ _("in the last minutes: it answers, nothing above its thresholds") | tojson }},
+    goodUnchecked: {{ _("in the last minutes nothing above its thresholds; whether it answers is not checked: it has no web port") | tojson }},
+    downFacts: {{ _("since {time}: three checks in a row without an answer while its service runs") | tojson }},
+    stoppedFacts: {{ _("Stopped on {time}: it is not measured") | tojson }},
+    noneFacts: {{ _("the monitor starts within a minute, the chart of the 24 hours fills from here") | tojson }},
+    reading: {{ _("Reading the measures…") | tojson }},
+    failed: {{ _("The measures could not be read: {error}") | tojson }},
+    older: {{ _("This machine does not have the monitor of its instances yet: update it to see it here.") | tojson }},
+    measuredFrom: {{ _("Measured since {time}: the history is shorter than the period.") | tojson }},
+    periods: {"1h": {{ _("in the last hour") | tojson }}, "24h": {{ _("in the last 24 hours") | tojson }},
+              "7d": {{ _("in the last 7 days") | tojson }}, "14d": {{ _("in the last 14 days") | tojson }}},
+    pastHead: {"1h": {{ _("In the last hour:") | tojson }}, "24h": {{ _("In the last 24 hours:") | tojson }},
+               "7d": {{ _("In the last 7 days:") | tojson }}, "14d": {{ _("In the last 14 days:") | tojson }}},
+    pastDown: {{ _("it did not answer for {duration} in all, the first time at {time}.") | tojson }},
+    more: {{ _("and {n} more ▸") | tojson }}, moreTitle: {{ _("Shows the other causes") | tojson }},
+    openLoad: {{ _("Load ▸") | tojson }}, openDatabase: {{ _("Database ▸") | tojson }},
+    openTitle: {{ _("Opens the section with the numbers of this cause") | tojson }},
+    cpu: {{ _("Processor at {value}% of the {cores} cores granted for {minutes} minutes: above {threshold}% it is to look at.") | tojson }},
+    memory: {{ _("Memory at {value}% of the {limit} granted for {minutes} minutes: above {threshold}% it is to look at.") | tojson }},
+    memoryShared: {{ _("Memory of the workspace at {value}% of the {limit} granted for {minutes} minutes, its instances together: above {threshold}% it is to look at.") | tojson }},
+    workers: {{ _("All {workers} workers busy for {minutes} minutes: who opens Odoo waits.") | tojson }},
+    dbSlow: {{ _("Its database has {count} queries running for more than 5 seconds, the longest for {time}.") | tojson }},
+    dbConnections: {{ _("Its database uses {count} connections of {max}.") | tojson }},
+    dbCache: {{ _("Its database reads only {value}% from memory: under 95% it slows down.") | tojson }},
+    remedy: {
+      cpu: {machine: {{ _("Grant the workspace more cores on its page, or look at the costliest operations in Database.") | tojson }},
+            customer: {{ _("Ask your provider for more cores, or look at the costliest operations in Database.") | tojson }},
+            acts: {{ _("Ask the administrator of the machine for more cores.") | tojson }}},
+      memory: {machine: {{ _("Grant the workspace more memory on its page, or fewer workers in Settings › Options of Odoo.") | tojson }},
+               customer: {{ _("Fewer workers in Settings › Options of Odoo, or ask your provider for more memory.") | tojson }},
+               acts: {{ _("Fewer workers in Settings › Options of Odoo, or ask the administrator of the machine for more memory.") | tojson }}},
+      workers: {machine: {{ _("Add workers in Settings › Options of Odoo.") | tojson }},
+                customer: {{ _("Add workers in Settings › Options of Odoo.") | tojson }},
+                acts: {{ _("Add workers in Settings › Options of Odoo.") | tojson }}},
+      database: {machine: {{ _("Its numbers are in Database.") | tojson }}, customer: {{ _("Its numbers are in Database.") | tojson }},
+                 acts: {{ _("Its numbers are in Database.") | tojson }}},
+    },
+    answeredSub: {{ _("of the checks, {period}") | tojson }},
+    answeredNone: {{ _("no check {period}") | tojson }},
+    responseSub: {{ _("not measured yet: it is read from the log of Odoo; above 1 s it is felt") | tojson }},
+    failedSub: {{ _("not measured yet: it is read from the log of Odoo; above 1% it is to look at") | tojson }},
+    memorySub: {{ _("now, Odoo and its database; at most {max} {period}; the workspace has {limit} for all its instances, above {threshold}% it is to look at") | tojson }},
+    memoryNoLimit: {{ _("now, Odoo and its database; at most {max} {period}") | tojson }},
+    memoryNone: {{ _("not measured {period}") | tojson }},
+    loadLine: {{ _("Processor at most {cpu}%, memory at most {mem}") | tojson }},
+    loadNone: {{ _("nothing measured in this period") | tojson }},
+    odoo: {{ _("Odoo") | tojson }}, database: {{ _("Database") | tojson }},
+    cluster: {{ _("PostgreSQL of the server, every database") | tojson }},
+    threshold: {{ _("Warning threshold") | tojson }}, limit: {{ _("Limit granted") | tojson }},
+    noteCluster: {{ _("The database is in the shared PostgreSQL: its load is not told apart from the other databases'.") | tojson }},
+    noteClusterMachine: {{ _("The database is in the PostgreSQL of this machine, shared: the dashed line is every database together.") | tojson }},
+    noteRemote: {{ _("The database is on another machine: here its statistics are read, not its load.") | tojson }},
+    noteRemoteHost: {{ _("The database is on another machine ({host}): here its statistics are read, not its load.") | tojson }},
+    cpuLabel: {{ _("Processor of {key} {period}: at most {value}% at {time}") | tojson }},
+    memLabel: {{ _("Memory of {key} {period}: at most {value} at {time}") | tojson }},
+    emptyLabel: {{ _("{what} of {key} {period}: nothing measured") | tojson }},
+    processor: {{ _("Processor") | tojson }}, memoryWord: {{ _("Memory") | tojson }},
+  };
+  const LANG = document.documentElement.lang || "en";
+  const num = (n, digits = 1) => Number(n).toLocaleString(LANG, {maximumFractionDigits: digits});
+  const mib = (v) => v >= 1024 ? `${num(v / 1024, 1)} GiB` : `${num(v, 0)} MiB`;
+  const fill = (text, values) => Object.entries(values).reduce((s, [k, v]) => s.split(`{${k}}`).join(v), text);
+  const at = (t) => new Date(t * 1000).toLocaleTimeString(LANG, {hour: "2-digit", minute: "2-digit"});
+  const day = (t) => new Date(t * 1000).toLocaleString(LANG, {day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit"});
+  const lasting = (s) => s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min` : `${s} s`;
+  const buttons = [...box.querySelectorAll("[data-period]")];
+  let period = "24h", timer = null, busy = false, lastCauses = "";
+  try { const kept = sessionStorage.getItem(KEY); if (PERIODS.includes(kept)) period = kept; } catch (e) { /* no storage: 24 hours */ }
+
+  function press() { for (const b of buttons) b.setAttribute("aria-pressed", String(b.dataset.period === period)); }
+  for (const b of buttons) b.addEventListener("click", () => {
+    period = b.dataset.period;
+    try { sessionStorage.setItem(KEY, period); } catch (e) { /* kept for this page only */ }
+    press(); load();
+  });
+  press();
+
+  function section(name) { return box.querySelector(`details[data-mon="${name}"]`); }
+  function opener(name) {
+    const fold = section(name);
+    if (!fold) return null;
+    const a = Object.assign(document.createElement("a"), {href: "#monitor", textContent: name === "load" ? M.openLoad : M.openDatabase, title: M.openTitle});
+    a.addEventListener("click", (ev) => { ev.preventDefault(); fold.open = true; fold.scrollIntoView({block: "start"}); });
+    return a;
+  }
+
+  function causeText(c) {
+    if (c.kind === "cpu") return fill(M.cpu, {value: c.value, cores: num(c.cores, 1), minutes: c.minutes, threshold: c.threshold});
+    if (c.kind === "memory") return fill(c.workspace ? M.memoryShared : M.memory, {value: c.value, limit: mib(c.limit), minutes: c.minutes, threshold: c.threshold});
+    if (c.kind === "workers") return fill(M.workers, {workers: c.workers, minutes: c.minutes});
+    if (c.what === "slow") return fill(M.dbSlow, {count: c.count, time: lasting(c.seconds || 0)});
+    if (c.what === "connections") return fill(M.dbConnections, {count: c.count, max: c.max});
+    if (c.what === "cache") return fill(M.dbCache, {value: num(c.value)});
+    return c.kind;
+  }
+
+  function drawVerdict(data) {
+    const v = data.verdict, verdict = box.querySelector(".mon-verdict");
+    verdict.className = "mon-verdict " + ({good: "good", look: "look", down: "down"}[v.state] || "");
+    box.querySelector(".mon-word").textContent = M[v.state] || v.state;
+    box.querySelector(".mon-facts").textContent = v.state === "good" ? "· " + (v.checked ? M.goodFacts : M.goodUnchecked)
+      : v.state === "down" ? "· " + fill(M.downFacts, {time: whenText(v.since)})
+      : v.state === "stopped" ? "· " + fill(M.stoppedFacts, {time: v.since ? whenText(v.since) : "?"})
+      : v.state === "none" ? "· " + M.noneFacts : "";
+    const list = box.querySelector(".mon-causes");
+    const items = v.causes.map((c, i) => {
+      const li = document.createElement("li");
+      li.append(causeText(c));
+      const remedy = (M.remedy[c.kind] || {})[who];
+      if (remedy) li.append(" ", Object.assign(document.createElement("span"), {className: "mon-remedy", textContent: remedy}));
+      const link = opener(c.section);
+      if (link) li.append(" ", link);
+      li.hidden = i >= 5;
+      return li;
+    });
+    if (v.causes.length > 5) {
+      const li = document.createElement("li"), more = document.createElement("button");
+      Object.assign(more, {type: "button", className: "small", textContent: fill(M.more, {n: v.causes.length - 5}), title: M.moreTitle});
+      more.addEventListener("click", () => { for (const x of list.children) x.hidden = false; li.remove(); });
+      li.append(more); items.push(li);
+    }
+    list.replaceChildren(...items);
+    list.hidden = !items.length;
+    // a section a cause names opens by itself, once for those causes: one closed by hand stays closed
+    const named = v.causes.map((c) => c.section).join(",");
+    if (named !== lastCauses) {
+      for (const c of v.causes) { const fold = section(c.section); if (fold) fold.open = true; }
+      lastCauses = named;
+    }
+    const past = box.querySelector(".mon-past");
+    const down = (data.past || []).find((p) => p.kind === "down");
+    past.hidden = !down;
+    past.textContent = down ? `${M.pastHead[data.period]} ${fill(M.pastDown, {duration: lasting(down.minutes * 60), time: (data.period === "1h" ? at : day)(down.at)})}` : "";
+  }
+
+  function tile(name, value, sub) {
+    const t = box.querySelector(`[data-mon-tile="${name}"]`);
+    t.querySelector(".tile-value").textContent = value;
+    t.querySelector(".tile-sub").textContent = sub;
+  }
+
+  function drawTiles(data) {
+    const t = data.tiles, when = M.periods[data.period];
+    tile("answered", t.answered.value === null ? "—" : num(t.answered.value) + "%",
+         fill(t.answered.value === null ? M.answeredNone : M.answeredSub, {period: when}));
+    tile("response", "—", M.responseSub);
+    tile("failed", "—", M.failedSub);
+    const m = t.memory;
+    tile("memory", m.value === null || m.value === undefined ? "—" : mib(m.value), m.value === null ? fill(M.memoryNone, {period: when})
+      : fill(m.limit ? M.memorySub : M.memoryNoLimit, {max: mib(m.max ?? m.value), period: when, limit: mib(m.limit || 0),
+                                                        threshold: data.load.memory_threshold}));
+  }
+
+  function drawLoad(data) {
+    const load = data.load, points = load.points, span = {"1h": 3600, "24h": 86400, "7d": 604800, "14d": 1209600}[data.period];
+    const where = load.database.where, when = M.periods[data.period], key = box.dataset.key;
+    const note = box.querySelector(".mon-db-note");
+    note.textContent = where === "remote" ? (load.database.host ? fill(M.noteRemoteHost, {host: load.database.host}) : M.noteRemote)
+      : where === "cluster" ? (load.cluster ? M.noteClusterMachine : M.noteCluster) : "";
+    note.hidden = !note.textContent;
+    // beyond one hour the axis says the day too: 16:45 of yesterday and of today are not the same time
+    const long = data.period !== "1h";
+    const opts = {gap: data.period === "1h" ? 400 : data.interval * 2.5, from: data.now - span, to: data.now,
+                  when: long ? day : at, format: (v) => v.toFixed(0)};
+    const own = where === "service";
+    const cpuLines = [], memLines = [];
+    if (own) { cpuLines.push({cls: "c2", value: (p) => p.db_cpu}); memLines.push({cls: "c2", value: (p) => p.db_mem}); }
+    if (load.cluster) { cpuLines.push({cls: "mon-cluster", value: (p) => p.cluster_cpu}); memLines.push({cls: "mon-cluster", value: (p) => p.cluster_mem}); }
+    const cpuRules = [{cls: "mon-thr", value: load.cpu_threshold}];
+    const memRules = load.memory_limit ? [{cls: "mon-thr", value: load.memory_limit}] : [];
+    const peak = (k) => points.reduce((best, p) => (p[k] ?? -1) > (best?.[k] ?? -1) ? p : best, null);
+    const cpuTop = peak("odoo_cpu"), memTop = peak("odoo_mem");
+    const cpuSvg = box.querySelector('[data-mon-chart="cpu"]'), memSvg = box.querySelector('[data-mon-chart="mem"]');
+    OmniaCharts.draw(cpuSvg, points, "odoo_cpu", {...opts, unit: "%", minMax: load.cpu_threshold + 10, lines: cpuLines, rules: cpuRules,
+      tip: (p) => [`${M.odoo} ${p.odoo_cpu ?? "–"}%`, own ? `${M.database} ${p.db_cpu ?? "–"}%` : null,
+                   load.cluster ? `${M.cluster} ${p.cluster_cpu ?? "–"}%` : null].filter(Boolean).join(" · ")});
+    OmniaCharts.draw(memSvg, points, "odoo_mem", {...opts, unit: " MiB", lines: memLines, rules: memRules,
+      tip: (p) => [`${M.odoo} ${p.odoo_mem === null || p.odoo_mem === undefined ? "–" : mib(p.odoo_mem)}`,
+                   own ? `${M.database} ${p.db_mem === null || p.db_mem === undefined ? "–" : mib(p.db_mem)}` : null,
+                   load.cluster && p.cluster_mem !== null && p.cluster_mem !== undefined ? `${M.cluster} ${mib(p.cluster_mem)}` : null].filter(Boolean).join(" · ")});
+    cpuSvg.setAttribute("aria-label", cpuTop ? fill(M.cpuLabel, {key, period: when, value: num(cpuTop.odoo_cpu, 0), time: (long ? day : at)(cpuTop.t)})
+      : fill(M.emptyLabel, {what: M.processor, key, period: when}));
+    memSvg.setAttribute("aria-label", memTop ? fill(M.memLabel, {key, period: when, value: mib(memTop.odoo_mem), time: (long ? day : at)(memTop.t)})
+      : fill(M.emptyLabel, {what: M.memoryWord, key, period: when}));
+    const last = (k) => { for (let i = points.length - 1; i >= 0; i--) if (points[i][k] !== null && points[i][k] !== undefined) return points[i][k]; return null; };
+    const cpuItems = [{label: M.odoo, cls: "s1", value: last("odoo_cpu") === null ? "–" : num(last("odoo_cpu"), 0) + "%"}];
+    const memItems = [{label: M.odoo, cls: "s1", value: last("odoo_mem") === null ? "–" : mib(last("odoo_mem"))}];
+    if (own) {
+      cpuItems.push({label: M.database, cls: "c2", value: last("db_cpu") === null ? "–" : num(last("db_cpu"), 0) + "%"});
+      memItems.push({label: M.database, cls: "c2", value: last("db_mem") === null ? "–" : mib(last("db_mem"))});
+    }
+    if (load.cluster) {
+      cpuItems.push({label: M.cluster, cls: "mon-cluster", value: last("cluster_cpu") === null ? "–" : num(last("cluster_cpu"), 0) + "%"});
+      memItems.push({label: M.cluster, cls: "mon-cluster", value: last("cluster_mem") === null ? "–" : mib(last("cluster_mem"))});
+    }
+    cpuItems.push({label: M.threshold, cls: "mon-thr", value: load.cpu_threshold + "%"});
+    if (load.memory_limit) memItems.push({label: M.limit, cls: "mon-thr", value: mib(load.memory_limit)});
+    OmniaCharts.legend(box.querySelector('[data-mon-legend="cpu"]'), cpuItems);
+    OmniaCharts.legend(box.querySelector('[data-mon-legend="mem"]'), memItems);
+    const cpuMax = Math.max(-1, ...points.map((p) => p.odoo_cpu_max ?? p.odoo_cpu ?? -1));
+    const memMax = Math.max(-1, ...points.map((p) => (p.odoo_mem_max ?? p.odoo_mem ?? 0) + (p.db_mem_max ?? p.db_mem ?? 0)));
+    box.querySelector('[data-mon-line="load"]').textContent = cpuMax < 0 ? M.loadNone
+      : fill(M.loadLine, {cpu: num(cpuMax, 0), mem: mib(data.tiles.memory.max ?? memMax)});
+  }
+
+  async function load() {
+    if (box.hidden) return;
+    // a read in flight (the first can take seconds: its database's statistics) gives way to the new one, a
+    // period chosen meanwhile is never lost nor drawn over by the older answer
+    if (busy) busy.abort();
+    const asked = busy = new AbortController();
+    const note = box.querySelector(".mon-note");
+    try {
+      const resp = await fetch(`${box.dataset.api}?period=${period}`, {headers: {Accept: "application/json"}, signal: asked.signal});
+      if (resp.status === 404) {
+        // a linked machine of a release before the monitor (the central panel draws this page): it has no route
+        box.querySelector(".mon-word").textContent = M.none;
+        box.querySelector(".mon-facts").textContent = "";
+        note.textContent = M.older; note.hidden = false;
+        return;
+      }
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || data.detail || resp.status);
+      drawVerdict(data);
+      drawTiles(data);
+      drawLoad(data);
+      note.textContent = data.measured_from ? fill(M.measuredFrom, {time: whenText(new Date(data.measured_from * 1000))}) : "";
+      note.hidden = !note.textContent;
+    } catch (e) {
+      if (asked.signal.aborted) return;
+      note.textContent = fill(M.failed, {error: e.message}); note.hidden = false;
+    } finally {
+      if (busy !== asked) return;  // a newer read keeps the timer
+      busy = null;
+      clearTimeout(timer);
+      timer = setTimeout(tick, period === "1h" ? 5000 : 60000);
+    }
+  }
+  function tick() { if (document.hidden || box.hidden) { timer = setTimeout(tick, 5000); return; } load(); }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && !box.hidden) load(); });
+  window.omniaMonitor = {load};
+  if (!box.hidden) load();
+})();
+</script>
 {{ console_script() }}
 {{ odoolog_script() }}
 <script>
@@ -1353,14 +1662,7 @@ dialog.sd { --dialog-w: 560px; }
 </script>
 <script>
 (function () {
-  const panels = [...document.querySelectorAll(".instance-panel")];
-  const charts = document.querySelector(".instance-charts");
-  const series = {};
-  let since = 0;
   const T = {
-    measured: {{ _("Measured on: {source}") | tojson }},
-    core: {{ _("{n} core") | tojson }}, cores: {{ _("{n} cores") | tojson }},
-    cpuOf: {{ _("100% is one core; this machine has {cores}") | tojson }}, memTop: {{ _("the most of the last hour: {top} MiB") | tojson }},
     emptyList: {{ _("No backup yet. Make the first with More › Back up now, or switch the automatic backups on here above.") | tojson }}, file: {{ _("File") | tojson }}, date: {{ _("Date") | tojson }},
     size: {{ _("Size") | tojson }}, listFailed: {{ _("Could not load the backups.") | tojson }},
     kind: {{ _("Type") | tojson }}, kinds: {scheduled: {{ _("automatic") | tojson }}, "pre-update": {{ _("before an update") | tojson }},
@@ -1416,25 +1718,26 @@ dialog.sd { --dialog-w: 560px; }
   const tabs = [...document.querySelectorAll(".tabs [data-tab]")];
   // the tabs of before UX-006, for an address kept somewhere (#database, #addons, #updates, #odoo-config)
   const MOVED = {database: "monitor", addons: "modules", updates: "modules", deploys: "modules", "odoo-config": "settings"};
-  let loadMeasured = false;
   function show(name) {
     const section = MOVED[name] ? name : null;
     name = MOVED[name] || name;
     if (!tabs.some((t) => t.dataset.tab === name && !t.hidden)) name = "overview";
     for (const t of tabs) t.setAttribute("aria-selected", String(t.dataset.tab === name));
     for (const p of document.querySelectorAll(".tab-panel")) {
-      // the charts only once something is measured: the tab may be there for the database alone
-      p.hidden = p.dataset.panel !== name || (p.classList.contains("instance-charts") && !loadMeasured);
+      p.hidden = p.dataset.panel !== name;
     }
     if (name === "backups") loadBackups();
     if (name === "modules" && window.loadRepoStates) window.loadRepoStates();
     if (name === "mail") { loadMail(); loadInbox(); }
     if (name === "settings" && document.querySelector('[data-section="odoo-config"]')) loadOdooConfig();
-    if (name === "monitor") {
-      since = 0; for (const k in series) delete series[k]; refresh();
-      if (document.querySelector('[data-section="database"]')) loadDatabase();
+    if (name === "monitor") window.omniaMonitor?.load();
+    if (section) {
+      // a section of the Monitoring tab is closed: the address that names it opens it
+      const found = document.querySelector(`[data-section="${section}"]`);
+      const fold = found?.closest("details");
+      if (fold) fold.open = true;
+      found?.scrollIntoView();
     }
-    if (section) document.querySelector(`[data-section="${section}"]`)?.scrollIntoView();
   }
   for (const t of tabs) t.addEventListener("click", () => { history.replaceState(null, "", "#" + t.dataset.tab); show(t.dataset.tab); });
   // a link to a tab of this same page (Log in the menu of «Ambienti e deploy», the CI sign to #updates) changes
@@ -2006,6 +2309,9 @@ dialog.sd { --dialog-w: 560px; }
     verdict.className = "db-verdict " + (said.length ? "look" : "good");
     word.textContent = said.length ? DB.look : DB.good;
     facts.textContent = `· ${bytes(data.size)} · PostgreSQL ${(data.version || "").split(".")[0]}`;
+    // the line of its closed section says the same verdict
+    const line = document.querySelector('[data-mon-line="database"]');
+    if (line) line.textContent = `${word.textContent} · ${bytes(data.size)}`;
     causes.replaceChildren(...said.map((t) => Object.assign(document.createElement("li"), {textContent: t})));
     causes.hidden = !said.length;
     box.querySelector(".db-body").hidden = false;
@@ -2064,6 +2370,9 @@ dialog.sd { --dialog-w: 560px; }
     }
   }
   document.getElementById("db-reload")?.addEventListener("click", loadDatabase);
+  // the Database section of Monitoring reads its statistics when it is opened
+  const dbFold = document.querySelector('details[data-mon="database"]');
+  dbFold?.addEventListener("toggle", () => { if (dbFold.open) loadDatabase(); });
   // the CI of the instance: on, its webhook's address and (once) its secret; one line of what it follows and
   // of the last push; a production shown off, with why
   (async function () {
@@ -2446,44 +2755,6 @@ dialog.sd { --dialog-w: 560px; }
     location.href = `{{ prefix }}/jobs/${data.job}`;
   });
 
-  async function refresh() {
-    let data;
-    try {
-      const resp = await fetch(`{{ prefix }}/api/metrics?server={{ server.name | urlencode }}&since=${since}`);
-      if (!resp.ok) return;
-      data = await resp.json();
-    } catch (e) { return; }
-    for (const panel of panels) {
-      const info = data.instances[panel.dataset.key];
-      if (!info) continue;
-      const points = (series[panel.dataset.key] = (series[panel.dataset.key] || []).concat(info.points).slice(-720));
-      // the Monitoring tab: only once something is measured
-      const measured = points.some((p) => p.cpu !== null || p.mem > 0 || p.procs > 0);
-      const tab = tabs.find((t) => t.dataset.tab === "monitor");
-      if (measured && !loadMeasured) {
-        loadMeasured = true;
-        if (tab && tab.hidden) { tab.hidden = false; if (location.hash === "#monitor") show("monitor"); }
-        else if (tab && tab.getAttribute("aria-selected") === "true") show("monitor");
-      }
-      if (!charts || charts.hidden) continue;
-      charts.querySelector(".tiles").title = info.source ? T.measured.replace("{source}", info.source) : "";
-      charts.querySelector(".cores").textContent = (data.cores === 1 ? T.core : T.cores).replace("{n}", data.cores);
-      OmniaCharts.draw(charts.querySelector('[data-chart="cpu"]'), points, "cpu", {unit: "%", minMax: 10, format: (v) => v.toFixed(0)});
-      OmniaCharts.draw(charts.querySelector('[data-chart="mem"]'), points, "mem", {unit: " MiB", format: (v) => v.toFixed(0)});
-      const last = points[points.length - 1];
-      if (last) {
-        charts.querySelector('[data-tile="cpu"]').textContent = last.cpu === null ? "–" : num(last.cpu) + "%";
-        charts.querySelector('[data-tile="mem"]').textContent = num(last.mem, 0) + " MiB";
-        charts.querySelector('[data-tile-sub="cpu"]').textContent = T.cpuOf.replace("{cores}", (data.cores === 1 ? T.core : T.cores).replace("{n}", data.cores));
-        charts.querySelector('[data-tile-sub="mem"]').textContent = T.memTop.replace("{top}", num(Math.max(...points.map((p) => p.mem || 0)), 0));
-        charts.querySelector('[data-tile="procs"]').textContent = last.procs;
-      }
-    }
-    const all = Object.values(series).flat();
-    if (all.length) since = Math.max(...all.map((p) => p.t));
-  }
-  refresh();
-  setInterval(() => { if (!document.hidden) refresh(); }, 5000);
 
   // a More menu closes on a click outside it, and on Escape
   document.addEventListener("click", (ev) => {

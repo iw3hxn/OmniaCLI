@@ -1614,6 +1614,24 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
                             lambda job: instancearchive.make(job, inst, folder), wait_seconds)
 
     @server.tool()
+    async def instance_monitor(server_name: str, role: str, ctx: Context, period: str = "24h") -> dict:
+        """Whether an instance is well now and its load over a period (1h,
+        24h, 7d or 14d), as its page's Monitoring tab shows it: verdict
+        (state good, look with its causes, down, stopped or none: not
+        measured yet), the tiles (answered: percent of the monitor's checks;
+        response and failed: null with their reason until they are read from
+        Odoo's log; memory: its maximum against what is granted, MiB) and
+        load.points (Odoo and its own database apart: CPU in percent of the
+        cores granted, memory in MiB). Read only."""
+        need(ctx, "instance_monitor")
+        if api.get("monitor") is None:
+            raise ToolError("This OmniaCLI has no monitor of the instances through MCP")
+        inst = instance(server_name, role, ctx)
+        if period not in ("1h", "24h", "7d", "14d"):
+            raise ToolError("The period is one of 1h, 24h, 7d, 14d")
+        return await api["monitor"](inst, period, view_of(ctx) is not None)
+
+    @server.tool()
     async def database_report(server_name: str, role: str, ctx: Context) -> dict:
         """The health of an instance's database: size, connections, cache hits,
         the queries running for long, the costliest statements

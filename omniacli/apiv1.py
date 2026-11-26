@@ -53,6 +53,8 @@ V1_WORKSPACE_TOOLS = {
     ("POST", "/api/v1/instances/{server}/{role}/destination"): ("set_instance_destination",),
     # the recovery at a minute of a workspace's production: its state, switched on and off, the days it keeps
     ("GET", "/api/v1/instances/{server}/{role}/pitr"): ("pitr_status",),
+    # the monitor of an instance (UX-018, AD-019): its verdict, its tiles and its load over a period
+    ("GET", "/api/v1/instances/{server}/{role}/monitor"): ("instance_monitor",),
     ("POST", "/api/v1/instances/{server}/{role}/pitr/enable"): ("pitr_enable",),
     ("POST", "/api/v1/instances/{server}/{role}/pitr/disable"): ("pitr_disable",),
     ("POST", "/api/v1/instances/{server}/{role}/pitr/settings"): ("set_pitr_days",),
