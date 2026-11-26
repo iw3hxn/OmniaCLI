@@ -113,6 +113,8 @@ NOT_SENSITIVE = frozenset({
     "/api/workspaces/{workspace}/load", "/api/workspaces/space", "/workspaces/{workspace}",
     "/api/instances/versions", "/api/servers/{server}/stagings", "/api/servers/{server}/stagings/new",
     "/api/servers/{server}/stagings/elsewhere", "/api/stagings/host", "/api/servers/{server}/pitr",
+    # the recovery at a minute of an instance through the REST API: its range, its days, its sizes
+    "/api/v1/instances/{server}/{role}/pitr",
     "/api/servers/{server}/{role}/addresses", "/api/catalog", "/api/servers/{server}/modules",
     # the publication through another machine (relay.py): its state, the relays, what a relay hosts
     "/api/servers/{server}/{role}/relay", "/api/relays", "/api/relay/facts", "/api/relay/hosted",

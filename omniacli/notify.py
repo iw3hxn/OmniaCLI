@@ -45,7 +45,7 @@ LEVELS = ("info", "warning", "critical")
 # the events a webhook may get: their names do not change
 EVENTS = ("instance.down", "instance.up", "instance.restarted", "instance.restart_failed",
           "instance.restart_held", "machine.threshold", "machine.threshold.cleared", "certificate.ending",
-          "schedule.failed", "job.failed", "job.warned", "notice.test", "notice", "relay.down")
+          "schedule.failed", "job.failed", "job.warned", "notice.test", "notice", "relay.down", "pitr.room")
 SIGNATURE_HEADER = "X-OmniaCLI-Signature-256"
 EVENT_HEADER = "X-OmniaCLI-Event"
 

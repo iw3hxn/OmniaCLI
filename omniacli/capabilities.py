@@ -209,6 +209,10 @@ ROUTES = {
         ("POST", "/api/servers/{server}/{role}/backups/delete"), ("GET", "/api/servers/{server}/{role}/remote-backups"),
         ("POST", "/api/servers/{server}/{role}/remote-backups/fetch"), ("GET", "/api/servers/{server}/pitr"),
         ("POST", "/api/servers/{server}/pitr/enable"), ("POST", "/api/servers/{server}/pitr/base"),
+        # the recovery at a minute switched off, and the days it keeps, on the page, the REST API and MCP
+        ("POST", "/api/servers/{server}/pitr/disable"), ("POST", "/api/servers/{server}/pitr/settings"),
+        ("GET", "/api/v1/instances/{server}/{role}/pitr"), ("POST", "/api/v1/instances/{server}/{role}/pitr/enable"),
+        ("POST", "/api/v1/instances/{server}/{role}/pitr/disable"), ("POST", "/api/v1/instances/{server}/{role}/pitr/settings"),
         ("POST", "/api/v1/instances/{server}/{role}/backups"))},
     **{(m, p): "download" for m, p in (
         ("GET", "/backups/{server}/{role}/{name}"), ("GET", "/api/v1/instances/{server}/{role}/backups/{file}"))},
@@ -276,6 +280,7 @@ TOOLS = {"read_log": "logs", "database_report": "logs",
          "update_test": "code", "update_production": "code", "list_deploys": "code", "deploy_back": "code",
          "backup_test": "backup", "backup": "backup", "verify_backup": "backup", "full_archive": "backup",
          "instance_destination": "backup", "set_instance_destination": "backup",
+         "pitr_status": "backup", "set_pitr_days": "backup", "pitr_enable": "backup", "pitr_disable": "backup",
          "create_staging": "stagings",
          "upload_backup": "restore", "restore_new_instance": "restore"}
 

@@ -61,7 +61,7 @@ from . import audit, centralbackup, identityimport, identitypass, remotehome, si
 from . import apiguard, apiv1
 from .apiguard import ApiError
 from . import i18n, loginas, machines, modulecatalog, pgreport, pgtuning, stagings, workspaceweb
-from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica, relay
+from . import clusterpitr, inframap, linkedcluster, machinedb, managedreplica, pitrhelper, relay
 from . import stagingmail
 from . import deploys, zerodowntime
 from . import github
@@ -479,6 +479,8 @@ WORKSPACE_ROUTES = frozenset({
     "/api/servers/{server}/{role}/environments",
     "/api/servers/{server}/pitr", "/api/servers/{server}/pitr/enable",
     "/api/servers/{server}/pitr/base", "/api/servers/{server}/pitr/restore",
+    # its switch off and the days its recovery at a minute keeps: its admins
+    "/api/servers/{server}/pitr/disable", "/api/servers/{server}/pitr/settings",
     "/workspaces/{workspace}/destinations", "/api/workspaces/{workspace}/destinations/save",
     "/api/workspaces/{workspace}/destinations/delete", "/api/workspaces/{workspace}/destinations/check",
     "/api/workspaces/{workspace}/destinations/key",
@@ -1685,6 +1687,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                                              "central_backup": lambda *a, **k: api_hooks["central_backup"](*a, **k),
                                              # the destinations of the backups (AD-016 §16.1): the pages' code
                                              "offsite": lambda *a, **k: offsite_act(*a, **k),
+                                             # the recovery at a minute of a production: the pages' code
+                                             "pitr": lambda *a, **k: pitr_act(*a, **k),
                                              # a machine behind NAT and its central panel (AD-017 §17.6)
                                              "agent_relay": lambda *a, **k: api_hooks["agent_relay"](*a, **k),
                                              "link_relay": lambda *a, **k: api_hooks["link_relay"](*a, **k),
@@ -8081,46 +8085,161 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                          "free": room.get("free"), "reserve": room.get("reserve")})
         return view
 
-    @app.get("/api/servers/{server}/pitr", dependencies=[Depends(developer)])
-    async def pitr_state(server: str, me: Principal = Depends(current_user)):
-        """Whether it is on, the base backups, the first and last minute a restore can reach."""
-        ws, instance, _ = pitr_target(server)
+    def pitr_days(record: dict) -> int:
+        """The days of the window an instance's record chose; KEEP_DAYS (what was kept before it could be
+        chosen) when none, or one that is not a number of the range."""
         try:
-            found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
-        except JobFailed as exc:
-            return refuse(str(exc), status.HTTP_502_BAD_GATEWAY)
-        if found.get("machine"):
-            found = cluster_pitr_view(found, machine_admin(me))
-        # this machine's time: the page tells a range that ended long ago from one that is still growing
-        return {**found, "now": datetime.datetime.now().isoformat(timespec="seconds")}
+            return pitrhelper.days_of(record.get("days"))
+        except workspacehelper.HelperError:
+            return pitrhelper.KEEP_DAYS
+
+    def pitr_view(found: dict, record: dict) -> dict:
+        """The state of an instance's own archive with what its record says: since when it is on (none for one
+        switched on before it was written), the days of its window, and whether the disk has the room for that
+        window (pitrhelper.room: it only warns)."""
+        if not found.get("enabled"):
+            return found
+        days = pitr_days(record)
+        return {**found, "days": days, "since": record.get("since") or None,
+                "room": pitrhelper.room(found, days)}
+
+    async def pitr_act(op: str, server: str, me: Principal, ip: str = "", body: Optional[dict] = None,
+                       source: str = "") -> tuple[int, dict]:
+        """(status, answer) of op on the recovery at a minute of a workspace's production, as the pages' routes,
+        the REST API and MCP ask it ({"error", "code"} for a refusal): state (who may back it up); enable,
+        disable (a job each) and settings ({"days": 1 to 35}, at once), by its admins. Each change in the
+        access log; source names who started a job (the pages: manual)."""
+        body = dict(body or {})
+        try:
+            ws, instance, prod = pitr_target(server)
+        except HTTPException as exc:
+            return exc.status_code, {"error": exc.detail, "code": "not_found"}
+        if not me.can("developer" if op == "state" else "admin"):
+            return 403, {"error": f"The recovery at a minute of {server} is {'read' if op == 'state' else 'changed'} "
+                                  f"by its {'developers' if op == 'state' else 'admins'}", "code": "forbidden"}
+        record = (await asyncio.to_thread(deployhooks.load, pitr_file)).get(server) or {}
+        if op == "state":
+            try:
+                found = await workspaceops.ask("pitr-state", ws.name, ws.storage, instance, "production")
+            except JobFailed as exc:
+                return 502, {"error": str(exc), "code": "failed"}
+            found = cluster_pitr_view(found, machine_admin(me)) if found.get("machine") else pitr_view(found, record)
+            # this machine's time: the page tells a range that ended long ago from one that is still growing
+            return 200, {**found, "now": datetime.datetime.now().isoformat(timespec="seconds")}
+        if on_machine_db(prod):
+            return 400, {"error": workspacehelper.PITR_ON_CLUSTER, "code": "refused"}
+        if on_remote_db(prod):
+            return 400, {"error": workspacehelper.PITR_ON_REMOTE, "code": "refused"}
+        who = source or f"manual: {me}"
+        if op == "settings":
+            days = body.get("days")
+            if isinstance(days, bool) or not isinstance(days, (int, str)) or not str(days).strip().isdigit() \
+                    or not pitrhelper.DAYS_RANGE[0] <= int(str(days).strip()) <= pitrhelper.DAYS_RANGE[1]:
+                return 400, {"error": f"The days kept are a whole number from {pitrhelper.DAYS_RANGE[0]} to "
+                                      f"{pitrhelper.DAYS_RANGE[1]}", "code": "refused"}
+            days = int(str(days).strip())
+            if not record:
+                return 409, {"error": f"The recovery at a minute of {server} is off: switch it on first",
+                             "code": "conflict"}
+            before = pitr_days(record)
+            await asyncio.to_thread(pitr_record, server, days=days)
+            access_log.record("action", me.kind, me.name, ip, f"recovery at a minute of {prod.key}: the last "
+                              f"{days} days kept (they were {before}); applied at the next full copy")
+            return 200, {"days": days, "before": before}
+        if op == "disable":
+            if not record:
+                return 409, {"error": f"The recovery at a minute of {server} is off already", "code": "conflict"}
+
+            async def off(job):
+                found = await workspaceops._helper(job, "pitr-disable", ws.name, ws.storage, instance, "production",
+                                                   timeout=PITR_RESTORE_TIMEOUT)
+                await asyncio.to_thread(pitr_record, server, enabled=False)
+                job.log(f"Recovery at a minute off for {prod.key}: nothing more is kept from now, "
+                        f"{gb_text(found.get('freed', 0))} GB of full copies and record of the changes deleted. "
+                        "The database is not restarted.")
+                job.result = found
+            job = jobs.submit(f"Recovery at a minute off for {prod.key}", [prod.key], who, off, workspace=ws.name)
+            access_log.record("action", me.kind, me.name, ip, f"recovery at a minute of {prod.key}: switched off "
+                              f"(job {job.id})")
+            return 200, {"job": job.id}
+        if op == "enable":
+            async def on(job):
+                found = await workspaceops._helper(job, "pitr-enable", ws.name, ws.storage, instance, "production",
+                                                   timeout=PITR_RESTORE_TIMEOUT)
+                now = datetime.datetime.now().isoformat(timespec="seconds")
+                await asyncio.to_thread(pitr_record, server, enabled=True, base=now, since=record.get("since") or now)
+                job.log(f"Point-in-time recovery on for {prod.key}: base backup {found.get('base')}"
+                        + ("" if found.get("restarted", True) else "; the database did not need a restart"))
+                job.result = found
+            job = jobs.submit(f"Point-in-time recovery on for {prod.key}", [prod.key], who, on, workspace=ws.name)
+            access_log.record("action", me.kind, me.name, ip, f"recovery at a minute of {prod.key}: switched on "
+                              f"(job {job.id})")
+            return 200, {"job": job.id}
+        return 400, {"error": f"{op!r} is not something the recovery at a minute does", "code": "refused"}
+
+    def pitr_ip(request: Request) -> str:
+        return request.client.host if request.client else ""
+
+    def pitr_answer(code: int, data: dict):
+        return data if code < 400 else JSONResponse({"error": data.get("error") or "Refused"}, status_code=code)
+
+    @app.get("/api/servers/{server}/pitr", dependencies=[Depends(developer)])
+    async def pitr_state(request: Request, server: str, me: Principal = Depends(current_user)):
+        """Whether it is on (since when, the days kept, the room for them), the base backups, the first and last
+        minute a restore can reach."""
+        return pitr_answer(*await pitr_act("state", server, me, pitr_ip(request)))
 
     @app.post("/api/servers/{server}/pitr/enable", dependencies=[Depends(admin)])
-    async def pitr_enable(server: str, me: Principal = Depends(current_user)):
-        """Point-in-time recovery switched on: the database archives its WAL
-        (a volume of its own, its service made again: a few seconds without
-        database), a first base backup; then one each night."""
-        ws, instance, prod = pitr_target(server)
-        if on_machine_db(prod):
-            return refuse(workspacehelper.PITR_ON_CLUSTER)
-        if on_remote_db(prod):
-            return refuse(workspacehelper.PITR_ON_REMOTE)
+    async def pitr_enable(request: Request, server: str, me: Principal = Depends(current_user)):
+        """Point-in-time recovery switched on: the database archives its WAL,
+        compressed (a volume of its own, its service made again: a few seconds
+        without database), a first base backup; then one each night."""
+        return pitr_answer(*await pitr_act("enable", server, me, pitr_ip(request)))
 
-        async def action(job):
-            found = await workspaceops._helper(job, "pitr-enable", ws.name, ws.storage, instance, "production",
-                                               timeout=PITR_RESTORE_TIMEOUT)
-            await asyncio.to_thread(pitr_record, server, enabled=True,
-                                    base=datetime.datetime.now().isoformat(timespec="seconds"))
-            job.log(f"Point-in-time recovery on for {prod.key}: base backup {found.get('base')}")
-            job.result = found
-        job = jobs.submit(f"Point-in-time recovery on for {prod.key}", [prod.key], f"manual: {me}", action,
-                          workspace=ws.name)
-        return {"job": job.id}
+    @app.post("/api/servers/{server}/pitr/disable", dependencies=[Depends(admin)])
+    async def pitr_disable(request: Request, server: str, me: Principal = Depends(current_user)):
+        """Switched off, without a restart: nothing more is archived, the full
+        copies and the archive deleted (pitrhelper.disable). A job."""
+        return pitr_answer(*await pitr_act("disable", server, me, pitr_ip(request)))
+
+    @app.post("/api/servers/{server}/pitr/settings", dependencies=[Depends(admin)])
+    async def pitr_settings(request: Request, server: str, payload: dict = Body(...),
+                            me: Principal = Depends(current_user)):
+        """{"days": 1 to 35}: the window kept, applied by the next full copy's retention."""
+        return pitr_answer(*await pitr_act("settings", server, me, pitr_ip(request), payload))
 
     async def pitr_base_job(job, ws: Workspace, instance: str, server: str) -> None:
-        found = await workspaceops._helper(job, "pitr-base", ws.name, ws.storage, instance, "production",
+        """A base backup and the retention of the instance's window; an archive of before made compressed from
+        now; the room for the window checked, and told when it is short (it only warns)."""
+        record = (await asyncio.to_thread(deployhooks.load, pitr_file)).get(server) or {}
+        days = pitr_days(record)
+        found = await workspaceops._helper(job, "pitr-base", ws.name, ws.storage, instance, "production", str(days),
                                            timeout=PITR_RESTORE_TIMEOUT)
         await asyncio.to_thread(pitr_record, server, base=datetime.datetime.now().isoformat(timespec="seconds"))
+        pruned = found.get("pruned") or {}
         job.log(f"Base backup {found.get('base')} ({found.get('size', 0) >> 20} MiB)")
+        if pruned.get("skipped"):
+            job.log("Nothing older deleted: a staging at a minute is reading the record of the changes now")
+        else:
+            job.log(f"The last {days} days kept: {pruned.get('kept', '?')} full copies stay; deleted as older: "
+                    f"{pruned.get('bases', 0)} full copies, {pruned.get('segments', 0)} files of changes")
+        if found.get("upgraded"):
+            job.log("The record of the changes is kept compressed from now; what was kept before stays readable")
+        room = pitrhelper.room(found.get("state") or {}, days)
+        if not room["fits"]:
+            key = settings.servers[server].production.key if server in settings.servers else server
+            text = (f"Keeping the last {days} days of {key} is expected to take about {gb_text(room['expected'])} GB "
+                    f"({gb_text(room['per_day'])} GB a day of changes, and the full copies); "
+                    f"{gb_text(room['need'])} GB more are needed and the disk has {gb_text(room['free'])} GB free. "
+                    "Free room on the disk, or keep fewer days (Backups tab): nothing is shortened by itself.")
+            job.warn(text)
+            try:
+                await monitor.tell(server, f"the recovery at a minute of {key} has not the room for its days", text,
+                                   event={"event": "pitr.room", "level": "warning", "instance": key, "days": days,
+                                          "need": room["need"], "free": room["free"]})
+            except Exception as told:  # noqa: BLE001 - the job says it all the same
+                job.warn(f"the warning was not told: {told}")
+
 
     PITR_EVERY = 3600
     PITR_BASE_AGE = 24 * 3600
@@ -33359,6 +33478,78 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         return api_offsite_answer(*await offsite_act("instance", me, api_ip(request),
                                                      {"server": inst.server, "role": inst.role,
                                                       "destination": body.destination}))
+
+    # --- the recovery at a minute of a workspace's production: the pages' code (pitr_act), the same answers; a
+    # change on a production by hand only (apiguard.production_refusal: the admin role, never a CI token, confirm =
+    # the server's name to switch it on or off)
+
+    def api_pitr_instance(me: Principal, server: str, role: str) -> Instance:
+        if role != "production":
+            raise ApiError(404, "not_found", f"The recovery at a minute is of a production: {server}/{role} has none")
+        return api_instance(me, server, role)
+
+    def api_pitr_answer(code: int, data: dict):
+        if code >= 400:
+            raise ApiError(code, data.get("code") or apiv1.code_of(code), data.get("error") or "Refused")
+        return data
+
+    @api_router.get(P + "/instances/{server}/{role}/pitr", summary="Read the recovery at a minute of a production",
+                    description="Whether it is on, since when, the days it keeps (days), the first and last minute "
+                                "a staging can be made at, the full copies and what the record of the changes takes "
+                                "(size, in bytes), and room: the free room of its disk against what the days are "
+                                "expected to need (fits false: free room or keep fewer days; it is never shortened "
+                                "by itself). A developer token.")
+    async def api_pitr(request: Request, server: str = PathParam(description="The production's server"),
+                       role: str = PathParam(description="production: the recovery at a minute is of a production"),
+                       me: Principal = Depends(api_token)):
+        api_developer(me, "Reading the recovery at a minute")
+        api_pitr_instance(me, server, role)
+        return api_pitr_answer(*await pitr_act("state", server, me, api_ip(request)))
+
+    async def api_pitr_job(request: Request, op: str, server: str, role: str, confirm: Optional[str],
+                           key: Optional[str], me: Principal):
+        inst = api_pitr_instance(me, server, role)
+        api_production(me, inst, "Switching the recovery at a minute " + ("on" if op == "enable" else "off"), confirm)
+
+        async def run():
+            found = api_pitr_answer(*await pitr_act(op, server, me, api_ip(request), source=f"api: {me}"))
+            return api_accepted(request, jobs.get(found["job"]))
+        return await api_once(request, me, key, run)
+
+    @api_router.post(P + "/instances/{server}/{role}/pitr/enable", status_code=202, response_model=apiv1.Accepted,
+                     summary="Switch the recovery at a minute on",
+                     description="The production's database keeps the record of every change, compressed, and a "
+                                 "full copy each night: a staging can then be made at any minute of the days kept. "
+                                 "The database restarts once, for a few seconds (not when it was switched off since "
+                                 "its last restart). A job. The admin role and confirm = the server's name, never a "
+                                 "CI token.")
+    async def api_pitr_enable(request: Request, server: str = PathParam(description="The production's server"),
+                              role: str = PathParam(description="production: the recovery at a minute is of a production"),
+                              body: Optional[apiv1.ActionBody] = None,
+                              idempotency_key: Optional[str] = IDEMPOTENCY_HEADER, me: Principal = Depends(api_token)):
+        return await api_pitr_job(request, "enable", server, role, body.confirm if body else None, idempotency_key, me)
+
+    @api_router.post(P + "/instances/{server}/{role}/pitr/disable", status_code=202, response_model=apiv1.Accepted,
+                     summary="Switch the recovery at a minute off",
+                     description="Nothing more is kept from now, without a restart; the full copies and the record "
+                                 "of the changes are deleted: no staging can be made at a past minute any more. A "
+                                 "job. The admin role and confirm = the server's name, never a CI token.")
+    async def api_pitr_disable(request: Request, server: str = PathParam(description="The production's server"),
+                               role: str = PathParam(description="production: the recovery at a minute is of a production"),
+                               body: Optional[apiv1.ActionBody] = None,
+                               idempotency_key: Optional[str] = IDEMPOTENCY_HEADER, me: Principal = Depends(api_token)):
+        return await api_pitr_job(request, "disable", server, role, body.confirm if body else None, idempotency_key, me)
+
+    @api_router.post(P + "/instances/{server}/{role}/pitr/settings", summary="Choose the days the recovery at a minute keeps",
+                     description="days, 1 to 35: kept from the next full copy (each night). The admin role, never a "
+                                 "CI token.")
+    async def api_pitr_settings(request: Request, body: apiv1.PitrDaysBody,
+                                server: str = PathParam(description="The production's server"),
+                                role: str = PathParam(description="production: the recovery at a minute is of a production"),
+                                me: Principal = Depends(api_token)):
+        inst = api_pitr_instance(me, server, role)
+        api_production(me, inst, "Choosing the days of the recovery at a minute", None, confirm_needed=False)
+        return api_pitr_answer(*await pitr_act("settings", server, me, api_ip(request), {"days": body.days}))
 
     # --- a machine behind NAT managed from a central panel (AD-017 §17.6): the pages' code (agent_relay_act,
     # link_relay_act), for a token of the machine with the admin role, never a workspace's or a CI's

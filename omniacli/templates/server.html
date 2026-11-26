@@ -624,6 +624,7 @@ dialog.sd { --dialog-w: 560px; }
     <h3>{{ _("Recovery at a minute") }}</h3>
     <p class="muted" style="font-size: var(--fs-14); margin: 0 0 8px; line-height: var(--lh-20);">{{ _("Brings the database back as it was at a chosen minute, in a new staging: production does not change.") }}</p>
     <p class="pitr-state" style="font-size: var(--fs-14); line-height: var(--lh-20);"></p>
+    <p class="banner warn pitr-room" role="status" hidden></p>
     {% if is_admin_here %}
     <div class="actions pitr-off" hidden><button type="button" id="pitr-enable" {{ off }}
       title="{{ _('Switches recovery at a minute on: the database starts keeping the record of every change and makes the first full copy at once, then one every night. The database restarts once, for a few seconds: in those seconds Odoo does not answer. Admins only.') }}">{{ _("Switch on…") }}</button></div>
@@ -633,6 +634,17 @@ dialog.sd { --dialog-w: 560px; }
       <button type="button" id="pitr-base" {{ off }}
         title="{{ _('Makes now the full copy of the database recovery at a minute starts from; it is made by itself every night. After a big change it shortens the recovery. It is a job.') }}">{{ _("Full copy now") }}</button>
     </div>
+    {# how many days it keeps, and its switch off (Carlo, 26/11/2026: a moving window, or the disk fills) #}
+    <div class="actions pitr-keep" hidden>
+      <label for="pitr-days">{{ _("Keep the last") }}</label>
+      <input type="number" id="pitr-days" min="1" max="35" step="1" inputmode="numeric" aria-describedby="pitr-days-note">
+      <span>{{ _("days") }}</span>
+      <span title="{{ _('Saves how many days back a staging can be made at; from the next full copy, tonight, what is older is deleted. More days take more disk. Disabled until the number is changed.') }}">
+        <button type="button" id="pitr-days-save" disabled>{{ _("Save") }}</button></span>
+      <button type="button" id="pitr-disable" class="danger" {{ off }}
+        title="{{ _('Stops keeping the record of the changes, at once and without restarting the database, and deletes the full copies and the record kept so far, freeing their disk. Admins only.') }}">{{ _("Switch off…") }}</button>
+    </div>
+    <p class="muted pitr-days-note" id="pitr-days-note"></p>
     {% else %}
     <p class="muted pitr-noadmin" style="font-size: var(--fs-14); line-height: var(--lh-20);">{{ _("An admin switches it on or uses it.") }}</p>
     {% endif %}
@@ -655,6 +667,8 @@ dialog.sd { --dialog-w: 560px; }
 .pitr { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
 .pitr h3 { margin: 0 0 6px; font-size: var(--fs-16); line-height: var(--lh-24);}
 .pitr-details { margin-top: 8px; } .pitr-details summary { font-size: var(--fs-14); line-height: var(--lh-20);}
+.pitr-keep { align-items: center; margin-top: 8px; } .pitr-keep input[type="number"] { width: 70px; }
+.pitr-days-note { margin: 4px 0 0; font-size: var(--fs-14); line-height: var(--lh-20); }
 </style>
 {% endif %}
 
@@ -1785,6 +1799,14 @@ dialog.sd { --dialog-w: 560px; }
                noneYet: {{ _("No full copy yet: the first is being made, or failed (see the last actions).") | tojson }},
                off: {{ _("Off: the database can only be had again as it was at the moment of a backup.") | tojson }},
                enableQ: {{ _("Switch recovery at a minute on for {server}? The database restarts once, for a few seconds.", server=server.name) | tojson }},
+               // its own archive: since when, the days it keeps, what it takes; the room for those days; off
+               onSince: {{ _("On since {since}, keeping the last {days} days: it takes {size}.") | tojson }},
+               onDays: {{ _("On, keeping the last {days} days: it takes {size}.") | tojson }},
+               noRoom: {{ _("The disk may fill: keeping {days} days is expected to need about {need} more ({day} a day of changes, and the full copies), and the disk has {free} free. Free room on the disk or keep fewer days: nothing is deleted by itself before its days.") | tojson }},
+               disableQ: {{ _("Switch recovery at a minute off for {server}? Nothing more is kept from now and what was kept ({size}) is deleted: a staging can no longer be made at a past minute. The database does not restart.") | tojson }}.replace("{server}", {{ server.name | tojson }}),
+               disableGo: {{ _("Switch off and delete") | tojson }},
+               daysSaved: {{ _("Saved: from the next full copy, tonight, {days} days are kept.") | tojson }},
+               daysOut: {{ _("The days are a whole number from 1 to 35.") | tojson }},
                restoreQ: {{ _("A new staging with the database of {server} as it was at {time}?") | tojson }}.replace("{server}", {{ server.name | tojson }}),
                restoreTitle: {{ _("Makes a new staging with the database of production as it was at the chosen minute, neutralized (no outgoing mail, no scheduled actions); the attachments are those of now. Production does not change.") | tojson }},
                outside: {{ _("The minute is outside the range that can be reached: choose one between {first} and {last}.") | tojson }},
@@ -1835,6 +1857,11 @@ dialog.sd { --dialog-w: 560px; }
       : P.machineNoRoomWhole.replace("{need}", bytes(data.need)).replace("{free}", bytes(data.free)).replace("{reserve}", bytes(data.reserve));
     if (!data.enabled) said.push(data.machine ? P.machineOff : P.off);
     else {
+      // its own archive: since when (none for one switched on before it was written down), the days, what it takes
+      if (!data.machine && data.days) {
+        said.push((data.since ? P.onSince.replace("{since}", whenText(data.since)) : P.onDays)
+          .replace("{days}", data.days).replace("{size}", bytes(data.size || 0)));
+      }
       const first = data.first ? whenText(data.first) : "", last = data.last ? whenText(data.last) : "";
       // right after the only full copy: its minute is not past yet
       const soon = !!data.machine && !!data.first && !!data.last && data.first > data.last;
@@ -1868,6 +1895,38 @@ dialog.sd { --dialog-w: 560px; }
     box.querySelector(".pitr-state").textContent = said.join(" ");
     if (data.machine && P.machineLink) box.querySelector(".pitr-state").append(" ", Object.assign(document.createElement("a"),
       {href: "{{ prefix }}/#database", textContent: P.machineLink, title: P.machineLinkTitle}));
+    // the disk of its archive has not the room for its days: said, never shortened by itself (pitrhelper.room)
+    const room = data.enabled && !data.machine ? data.room : null, roomBox = box.querySelector(".pitr-room");
+    roomBox.hidden = !room || room.fits;
+    if (room && !room.fits) {
+      roomBox.textContent = P.noRoom.replace("{days}", data.days).replace("{need}", bytes(room.need))
+        .replace("{day}", bytes(room.per_day || 0)).replace("{free}", bytes(room.free));
+    }
+    const keep = box.querySelector(".pitr-keep");
+    if (keep) {
+      keep.hidden = !data.enabled || !!data.machine;
+      const days = document.getElementById("pitr-days"), save = document.getElementById("pitr-days-save");
+      const note = document.getElementById("pitr-days-note");
+      days.value = data.days || 7;
+      const valid = () => /^\d+$/.test(days.value) && Number(days.value) >= 1 && Number(days.value) <= 35;
+      days.addEventListener("input", () => {
+        note.textContent = valid() ? "" : P.daysOut;
+        save.disabled = !valid() || Number(days.value) === data.days;
+      });
+      save.addEventListener("click", async () => {
+        save.disabled = true;
+        const resp = await fetch(box.dataset.api + "/settings", {method: "POST", body: JSON.stringify({days: Number(days.value)}),
+                                                               headers: {"Content-Type": "application/json", Accept: "application/json"}});
+        const out = await resp.json().catch(() => ({}));
+        if (!resp.ok) { save.disabled = false; omniaSay(out.error || out.detail || T.refused); return; }
+        data.days = out.days;
+        note.textContent = P.daysSaved.replace("{days}", out.days);
+      });
+      const offButton = document.getElementById("pitr-disable");
+      offButton.addEventListener("click", async () => {
+        if (await omniaAsk(P.disableQ.replace("{size}", bytes(data.size || 0)), P.disableGo, {danger: true, goTitle: offButton.title})) post("/disable");
+      });
+    }
     document.getElementById("pitr-enable")?.addEventListener("click", async () => { if (await omniaAsk(P.enableQ, document.getElementById("pitr-enable"))) post("/enable"); });
     document.getElementById("pitr-base")?.addEventListener("click", () => post("/base"));
     go?.addEventListener("click", async () => {

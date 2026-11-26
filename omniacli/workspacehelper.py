@@ -13,7 +13,8 @@
     omniacli workspace-helper login-path check | add | remove | sync <host or all>
     omniacli workspace-helper login-path keep on | off
     omniacli workspace-helper portal <host or -> | portal-names
-    omniacli workspace-helper pitr-enable | pitr-base | pitr-state <workspace> <storage> <instance> <role>
+    omniacli workspace-helper pitr-enable | pitr-disable | pitr-state <workspace> <storage> <instance> <role>
+    omniacli workspace-helper pitr-base <workspace> <storage> <instance> <role> <days kept, 1 to 35>
     omniacli workspace-helper pitr-restore <workspace> <storage> <source> <target> <time> <source db> <target db>
     omniacli workspace-helper machine-db-archive-state | machine-db-archive-off | machine-db-archive-base <major>
     omniacli workspace-helper machine-db-archive-on <major> <budget in GB> <bases kept> <GB left free> restart|no-restart
@@ -3320,8 +3321,13 @@ def pitr_enable(name: str, storage: str, instance: str, role: str) -> dict:
     return pitrhelper.enable(_dedicated(_project(name, storage, instance, role)))
 
 
-def pitr_base(name: str, storage: str, instance: str, role: str) -> dict:
-    return pitrhelper.base(_dedicated(_project(name, storage, instance, role)))
+def pitr_base(name: str, storage: str, instance: str, role: str, days: str) -> dict:
+    """A base backup, then the retention of the window of days days."""
+    return pitrhelper.base(_dedicated(_project(name, storage, instance, role)), pitrhelper.days_of(days))
+
+
+def pitr_disable(name: str, storage: str, instance: str, role: str) -> dict:
+    return pitrhelper.disable(_dedicated(_project(name, storage, instance, role)))
 
 
 def pitr_state(name: str, storage: str, instance: str, role: str) -> dict:
@@ -5973,7 +5979,8 @@ ACTIONS = {"disk": (disk, 3), "drop": (drop, 2), "limits": (limits, 3), "create"
            "web": (web, 3), "web-names": (web_taken, 1), "upstream": (upstream, 6), "maintenance": (maintenance, 5), "forward": (forward, 3), "owncert": (owncert, 2), "owncert-read": (owncert_read, 2), "firewall": (firewall, 1), "template-install": (template_install, 1),
            "conf": (conf, 5), "space": (space, 0),
            "storage-setup": (storage_setup, 0), "storage-check": (storage_check, 1), "storage-reset": (storage_reset, 1),
-           "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 4), "pitr-state": (pitr_state, 4),
+           "pitr-enable": (pitr_enable, 4), "pitr-base": (pitr_base, 5), "pitr-state": (pitr_state, 4),
+           "pitr-disable": (pitr_disable, 4),
            "pitr-restore": (pitr_restore, 7), "login-path": (login_path, 2),
            "portal": (portal, 1), "portal-names": (portal_taken, 0),
            "machine-db-create": (machine_db_create, 2), "machine-db-remove": (machine_db_remove, 1),
