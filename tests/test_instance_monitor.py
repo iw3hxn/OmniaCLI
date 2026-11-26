@@ -350,3 +350,18 @@ def test_the_workers_of_an_instance(tmp_path):
     assert im.workers_of(compose, lambda path: {"parameters": {"workers": 3}}) == 3
     assert im.workers_of(compose, lambda path: {"parameters": {}}) is None
     assert json.dumps(im.PERIODS) and im.DEFAULT_PERIOD == "24h"
+
+
+def test_a_database_on_another_machine(tmp_path):
+    """UX-018 criterion 7: on another machine, its host for the machine's admin only, no series of its own."""
+    sampler = _Sampler()
+    sampler.history["s/production"] = deque(_live(600, ocpu=10.0, omem=100.0, dcpu=None, dmem=None, conns=0))
+    args = dict(sampler=sampler, history=InstanceHistory(tmp_path), state={"state": "up"}, checks=[],
+                thresholds=THRESHOLDS, minutes=5, cores=2, memory_limit=None, workers=0, database=[], where="remote",
+                host="db.example.net:5432", workspace=None, now=NOW)
+    inst = _Instance("s/production", compose=False)
+    admin = im.build(inst, "1h", customer=False, **args)
+    assert admin["load"]["database"] == {"where": "remote", "host": "db.example.net:5432"}
+    customer = im.build(inst, "1h", customer=True, **args)
+    assert customer["load"]["database"] == {"where": "remote"} and "db.example.net" not in json.dumps(customer)
+    assert all("db_cpu" not in p and "cluster_cpu" not in p for p in customer["load"]["points"])
