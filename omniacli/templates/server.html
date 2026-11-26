@@ -1904,7 +1904,8 @@ dialog.sd { --dialog-w: 560px; }
     }
     const keep = box.querySelector(".pitr-keep");
     if (keep) {
-      keep.hidden = !data.enabled || !!data.machine;
+      // a machine of a release before 5530 (seen through the central panel) has no days nor switch-off to answer them
+      keep.hidden = !data.enabled || !!data.machine || !("days" in data);
       const days = document.getElementById("pitr-days"), save = document.getElementById("pitr-days-save");
       const note = document.getElementById("pitr-days-note");
       days.value = data.days || 7;

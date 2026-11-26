@@ -429,3 +429,10 @@ def test_the_rename_is_synced_with_its_folder():
     command = pitrhelper.archive_command("/var/lib/postgresql/wal/archive")
     assert command.endswith("mv /var/lib/postgresql/wal/archive/%f.gz.part /var/lib/postgresql/wal/archive/%f.gz && "
                             "sync /var/lib/postgresql/wal/archive; fi")
+
+
+def test_an_older_machine_gets_no_days_nor_switch_off():
+    """The central panel draws a machine of 5529 or before (no «days» in its answer, no /settings nor /disable route
+    there): the days and «Switch off…» stay hidden, not offered to fail (ber through the central, 26/11/2026)."""
+    page = (Path(__file__).parent.parent / "omniacli" / "templates" / "server.html").read_text(encoding="utf-8")
+    assert 'keep.hidden = !data.enabled || !!data.machine || !("days" in data);' in page
