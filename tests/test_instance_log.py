@@ -72,6 +72,25 @@ def test_the_access_lines_of_odoo_16_to_20():
     assert pages["/json/<n>/res.partner/search_read"][0] == 1
 
 
+def test_the_access_lines_written_by_odoo_16_17_and_20():
+    """Lines written by the images odoo:16.0, 17.0 and 20.0 on lab3 (27/11/2026, without a database: «?»); 20's
+    ident is a session's short id and its SQL time an integer when 0."""
+    real = [
+        '{t},203 1 INFO ? werkzeug: 10.0.0.1 - - [27/Nov/2026 06:39:10] "GET /web/health HTTP/1.1" 200 - 0 0.000 0.007',
+        '{t},785 1 INFO ? werkzeug: 10.0.0.1 - - [27/Nov/2026 06:39:10] "GET /web/database/selector HTTP/1.1" 200 - 0 0.000 0.580',
+        '{t},045 1 INFO ? werkzeug: 10.0.0.1 - - [27/Nov/2026 06:39:12] "GET /web/login?x=1 HTTP/1.1" 303 - 0 0.000 0.002',
+        '{t},596 1 INFO ? odoo.http.server: 10.0.0.1 S/eoPr91kF - [27/Nov/2026 06:39:13] "GET /web/health HTTP/1.1" 200 18 0 0 0.008 -',
+        '{t},833 1 INFO ? odoo.http.server: 10.0.0.1 S/5CFvzAkG - [27/Nov/2026 06:39:13] "GET /web/database/selector HTTP/1.1" 200 70451 0 0 0.235 -',
+        '{t},836 1 INFO ? odoo.http.server: 10.0.0.1 S/v2NPEGdo - [27/Nov/2026 06:39:13] "GET /nothing HTTP/1.1" 404 1484 0 0 0.002 -',
+    ]
+    counter = odoolog.Counter()
+    for line in real:
+        counter.line(line.format(t=HEAD))
+    tally = counter.spans[NOW]
+    assert (tally["rq"], tally["tm"], tally["rf"]) == (6, 6, 0)
+    assert tally["h"][odoolog.time_class(0.580)] == 1 and tally["h"][odoolog.time_class(0.235)] == 1
+
+
 def test_the_log_counts():
     """Errors (a traceback counted once, by its head), warnings without the WARNING Odoo 19 writes on every
     XML-RPC call (slice 0), workers stopped for memory (16-20), the database out of memory, conflicts retried,
@@ -371,10 +390,12 @@ async def test_a_job_reads_the_log_of_a_compose_instance_before_it_begins(tmp_pa
 
     async def read(instance, now=None):
         asked.append(instance.key)
+        # 20 MB a read: three reads to the end of what is there (a rotation of 50 MB just before the job)
+        reader.reads[instance.key] = {"more": len(asked) < 3}
         return 0
     monkeypatch.setattr(reader, "read", read)
     await reader.begin(type("J", (), {"instances": ["acme/production", "other/production"], "id": "j1"})())
-    assert asked == ["acme/production"]
+    assert asked == ["acme/production"] * 3
 
 
 # --- the alerts, grouped by cause ------------------------------------------

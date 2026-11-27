@@ -44,6 +44,7 @@ CATCH_UP = 20 * 1024 * 1024  # bytes read at most in a round
 KEEP_OPEN = 2 * 3600  # the spans kept in the cursor, to be written again whole when more of them is read
 CURSOR = "cursor.json"
 READ_TIMEOUT = 60
+BEGIN_MOST = 120  # seconds a job waits at most for the log of its instance to be read whole before it begins
 # why the log of an instance gives no requests: told as a sentence, never a zero (UX-018 §6.2)
 NO_FILE = "no_file"  # a venv whose Odoo writes no file (stdout, the journal)
 NO_ACCESS = "no_access"  # its log level writes no access line (warn, or werkzeug muted)
@@ -350,8 +351,14 @@ class InstanceLog:
             inst = srv.instances.get(role) if srv is not None else None
             if inst is None or inst.restart.type != "compose" or not self.measured(key):
                 continue
+            # the whole of it, past CATCH_UP: what the container of before wrote goes with it (lab3, 27/11/2026: a
+            # Docker rotation of 50 MB just before a job left 22 MB of the old file to read)
+            ends = time.monotonic() + BEGIN_MOST
             try:
-                await asyncio.wait_for(self.read(inst), READ_TIMEOUT)
+                while True:
+                    await asyncio.wait_for(self.read(inst), max(1.0, ends - time.monotonic()))
+                    if not (self.reads.get(key) or {}).get("more") or time.monotonic() >= ends:
+                        break
             except Exception:  # noqa: BLE001 - a read must not change the job
                 _logger.info("monitor: the log of %s was not read before job %s", key, job.id)
 

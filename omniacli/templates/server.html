@@ -772,7 +772,7 @@ dialog.sd { --dialog-w: 560px; }
 .mon-log-table { width: auto; min-width: 280px; }
 .mon-log-table td, .mon-log-table th { padding: 4px 12px 4px 0; text-align: left; }
 .mon-log-table td.n, .mon-log-table th + th { text-align: right; font-variant-numeric: tabular-nums; }
-.mon-pages td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.mon-pages td.n, .mon-pages th.n { text-align: right; font-variant-numeric: tabular-nums; }
 .mon-pages td.path { word-break: break-all; font-family: var(--mono); font-size: var(--fs-12); line-height: var(--lh-18); }
 .chart-line.mon-p95 { stroke: var(--cat-3); } .key.mon-p95 { background: var(--cat-3); }
 .chart-line.mon-failed { stroke: var(--err); } .key.mon-failed { background: var(--err); }
@@ -1561,6 +1561,12 @@ dialog.sd { --dialog-w: 560px; }
     logOpen: {{ _("Opens the Log tab on these records of the {period}") | tojson }},
     logClosed: {{ _("The Log tab is not open to you: the number cannot be opened") | tojson }},
     day: {{ _("24 hours") | tojson }}, week: {{ _("7 days") | tojson }},
+    logWhy: {no_file: {{ _("not counted: Odoo writes no log file") | tojson }},
+              unreadable: {{ _("not counted: its log could not be read") | tojson }},
+              not_yet: {{ _("the first counts within 5 minutes") | tojson }}},
+    logNote: {no_file: {{ _("Its counts come from the log of Odoo, which this instance does not write in a file.") | tojson }},
+              unreadable: {{ _("The log of Odoo could not be read: the requests and its counts are not told.") | tojson }},
+              not_yet: {{ _("The log of Odoo is read every 5 minutes: the first numbers come within 5 minutes.") | tojson }}},
   };
   const LANG = document.documentElement.lang || "en";
   const num = (n, digits = 1) => Number(n).toLocaleString(LANG, {maximumFractionDigits: digits});
@@ -1775,7 +1781,7 @@ dialog.sd { --dialog-w: 560px; }
     const opts = {gap: 300 * 2.5 * (points[0]?.minutes ? points[0].minutes / 5 : 1), from: data.now - span, to: data.now,
                   when: long ? day : at, format: (v) => v.toFixed(1)};
     const reqSvg = fold.querySelector('[data-mon-chart="req"]'), timeSvg = fold.querySelector('[data-mon-chart="time"]');
-    OmniaCharts.draw(reqSvg, points, "okm", {...opts, unit: "", lines: [{cls: "mon-failed", value: (p) => p.failm}],
+    OmniaCharts.draw(reqSvg, points, "okm", {...opts, unit: "", format: (v) => v.toFixed(0), lines: [{cls: "mon-failed", value: (p) => p.failm}],
       tip: (p) => `${M.okSeries} ${num(p.okm)} · ${M.failedSeries} ${num(p.failm)} ${M.perMinute}`});
     OmniaCharts.draw(timeSvg, points.filter((p) => p.median !== null), "median", {...opts, unit: " s", minMax: 1.2,
       lines: [{cls: "mon-p95", value: (p) => p.p95}], rules: [{cls: "mon-thr", value: 1}],
@@ -1817,8 +1823,8 @@ dialog.sd { --dialog-w: 560px; }
     const log = data.log, note = fold.querySelector(".mon-log-note"), zero = fold.querySelector(".mon-log-zero");
     const table = fold.querySelector(".mon-log-wrap"), line = fold.querySelector('[data-mon-line="log"]');
     if (log.source) {
-      note.textContent = M.note[log.source] || ""; note.hidden = !note.textContent;
-      table.hidden = true; zero.hidden = true; line.textContent = M.why[log.source] || "";
+      note.textContent = M.logNote[log.source] || ""; note.hidden = !note.textContent;
+      table.hidden = true; zero.hidden = true; line.textContent = M.logWhy[log.source] || "";
       return;
     }
     table.hidden = false;
