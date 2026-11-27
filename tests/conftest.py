@@ -99,6 +99,20 @@ def docker_here(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_root_helper_for_the_log(monkeypatch, request):
+    """A job's read of its instance's log (AD-019 slice 2) never runs the real root helper in the tests: on a
+    runner with sudo and docker it did, and a job outlived the test that waited for it (CI of 2026.1.5532). The
+    tests of the reading itself keep it."""
+    if request.module.__name__.rsplit(".", 1)[-1] in ("test_instance_log", "test_instance_log_review"):
+        return
+    from omniacli import instancelog
+
+    async def no_helper(instance, cursor):
+        raise OSError("no root helper in the tests")
+    monkeypatch.setattr(instancelog, "helper_read", no_helper)
+
+
+@pytest.fixture(autouse=True)
 def login_path_passed(monkeypatch):
     """The instances' nginx pass Log in as's path here (no network in the tests)."""
     from omniacli import loginas
