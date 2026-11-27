@@ -37,7 +37,8 @@ CLASSES = len(EDGES) + 1
 TOP = 20.0  # the upper bound the last class is read up to
 # the counts of a span: requests, failed (5xx), errors, warnings, workers stopped for memory, the database out of
 # memory, conflicts retried, API calls, mail sent and bounced, lines read
-COUNTS = ("rq", "rf", "e", "w", "k", "dbo", "s", "a", "ms", "mb", "ln", "tm")
+# ac: the access lines, a health check and the monitor's own check too (they say the log level writes them)
+COUNTS = ("rq", "rf", "e", "w", "k", "dbo", "s", "a", "ms", "mb", "ln", "tm", "ac")
 PAGES_KEPT = 50  # the worst pages of an hour kept (AD-019 19.5)
 PATH_MOST = 120  # characters of a page's path kept
 
@@ -204,6 +205,7 @@ class Counter:
         if not found:
             return
         target, status = found.group(2), found.group(3)
+        tally["ac"] += 1
         if target.startswith(NOT_PAGES) or status == "101" or target.split("?", 1)[0] in HEALTH or PROBE in target:
             return
         tally["rq"] += 1

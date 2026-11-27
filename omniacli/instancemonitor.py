@@ -549,8 +549,10 @@ def requests_view(log: list[dict], pages: list[dict], gaps: list[dict], open_hou
     found = [p for p in log if p["t"] >= since]
     total = _total(found)
     state = (read or {}).get("state")
-    if state is None and found and not total["rq"] and answered:
-        # lines read, the monitor's own checks answered, and no access line: its log level writes none
+    quiet = not total["rq"] and not total["ac"] and all("ac" in p for p in found)
+    if state is None and found and quiet and answered:
+        # lines read, the monitor's own checks answered, and no access line, not even of those checks: its log
+        # level writes none (the checks are no requests, but their lines say the level writes them: lab1, 27/11)
         state = "no_access"
     if state is None and not total["rq"]:
         state = "none"

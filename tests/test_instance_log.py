@@ -372,7 +372,7 @@ async def test_a_source_missing_is_a_sentence_never_a_zero(tmp_path):
     conf.write_text("[options]\nlogfile = /x/odoo.log\nlog_level = warn\n")
     assert instancelog.source(inst) == instancelog.NO_ACCESS
     # werkzeug muted some other way: lines read, the monitor's checks answered, no request
-    quiet = [{**_points(1, t=NOW - 300), "rq": 0, "tm": 0, "ln": 40}]
+    quiet = [{**_points(1, t=NOW - 300), "rq": 0, "tm": 0, "ln": 40, "ac": 0}]
     view = im.requests_view(quiet, [], [], {}, "24h", {"at": NOW, "state": None}, 5, NOW, True)
     assert view["source"] == "no_access" and im.request_tiles(view)["response"]["reason"] == "no_access"
     # nothing at all asked: no request, said so
@@ -625,3 +625,23 @@ def test_the_history_stays_under_its_cap():
                                                       for i in range(odoolog.PAGES_KEPT)}}, separators=(",", ":"))
     day = 288 * (len(point) + 1) + 288 * 2 * (len(span) + 1) + 24 * (len(pages) + 1)
     assert 14 * day < im.CAP_BYTES, 14 * day
+
+
+
+def test_an_idle_instance_whose_log_writes_the_checks_is_not_said_quiet():
+    """lab1's beta-odoo (27/11/2026): idle, only the monitor's own checks in its log at level info; they are no
+    requests, and the page said «its log level writes no request». Their access lines say it does: no request, said
+    so; and a point of a release before (no count of the access lines) is never read as a quiet level."""
+    counter = odoolog.Counter(span=300)
+    for n in range(5):
+        counter.line(f"2026-11-27 22:0{n}:16,912 1 INFO odoo werkzeug: 10.213.1.1 - - [27/Nov/2026 22:0{n}:16] "
+                     '"GET /web/login?omniacli-monitor=1 HTTP/1.1" 200 - 7 0.003 0.012')
+    (start, tally), = counter.spans.items()
+    assert tally["rq"] == 0 and tally["ac"] == 5
+    point = {**tally, "t": start}
+    point.pop("pages", None)
+    view = im.requests_view([point], [], [], {}, "24h", {"at": start + 300, "state": None}, 5, start + 300, True)
+    assert view["source"] == "none"
+    before = {k: v for k, v in point.items() if k != "ac"}
+    view = im.requests_view([before], [], [], {}, "24h", {"at": start + 300, "state": None}, 5, start + 300, True)
+    assert view["source"] == "none"
