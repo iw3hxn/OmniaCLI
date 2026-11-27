@@ -66,6 +66,31 @@ METRIC_LABELS = {"cpu": "CPU", "ram": "Memory"}
 AGENT_RELAY = "agent-relay"
 
 
+# the monitor's own check, in its query string: the monitor of an instance does not count it among its requests
+# (odoolog.PROBE)
+PROBE = "omniacli-monitor"
+# the causes of an instance read in its log that are told (Carlo, 26/11/2026: at once, grouped by cause); an
+# instance leaves a cause after CAUSE_CLEAR rounds of the log (5 minutes each) without it
+ALERTED_CAUSES = ("slow", "errors", "killed")
+CAUSE_CLEAR = 3
+CAUSE_SUBJECT_ONE = {"slow": "{key} is slow", "errors": "{key} fails requests",
+                     "killed": "{key} had workers stopped for memory"}
+CAUSE_SUBJECTS = {"slow": "{n} instances are slow", "errors": "{n} instances fail requests",
+                  "killed": "{n} instances had workers stopped for memory"}
+CAUSE_HEADS = {"slow": "Slow: half the requests over 1 s, or 1 in 20 over 3 s, in the last 15 minutes.",
+               "errors": "Failed requests: over 1% of them ended with an error, in the last 15 minutes.",
+               "killed": "Workers stopped for memory in the last 15 minutes: who was on them got an error."}
+CAUSE_LINES = {"slow": "{key}: half within {median} s, 1 in 20 over {p95} s ({requests} requests)",
+               "errors": "{key}: {percent}% failed ({failed} of {requests})",
+               "killed": "{key}: {count} workers stopped"}
+NEW_MARK = "(new)"
+
+
+def _cause_numbers(cause: dict) -> dict:
+    """The numbers of a cause its message says, never a text of the log."""
+    return {k: cause.get(k) for k in ("median", "p95", "requests", "percent", "failed", "count")}
+
+
 def level_of(value: float, limits) -> str | None:
     """critical, warning or None for a percent and its [warning, critical]."""
     if value >= limits[1]:
@@ -85,6 +110,8 @@ class Monitor:
         self.instances: dict[str, dict] = {}
         # {what: {"problem", "level", "told", "since"}}: disks, certificates, the load (cpu, ram)
         self.machine: dict[str, dict] = {}
+        # {cause: {instance key: {"since", "clear", "cause"}}}: the instances in each cause of their log, told once
+        self.causes: dict[str, dict] = {}
         self._task: asyncio.Task | None = None
         self._last = {"disk": 0.0, "cert": 0.0, "save": time.time()}
         self._restarts: set[asyncio.Task] = set()
@@ -102,11 +129,12 @@ class Monitor:
         if isinstance(data, dict):
             self.instances = {k: v for k, v in (data.get("instances") or {}).items() if isinstance(v, dict)}
             self.machine = {k: v for k, v in (data.get("machine") or {}).items() if isinstance(v, dict)}
+            self.causes = {k: v for k, v in (data.get("causes") or {}).items() if isinstance(v, dict)}
 
     def save(self) -> None:
         tmp = self.path.with_name(self.path.name + ".tmp")
         try:
-            tmp.write_text(json.dumps({"instances": self.instances, "machine": self.machine}), encoding="utf-8")
+            tmp.write_text(json.dumps({"instances": self.instances, "machine": self.machine, "causes": self.causes}), encoding="utf-8")
             os.replace(tmp, self.path)
         except OSError as exc:
             _logger.warning("monitor: cannot write %s: %s", self.path, exc)
@@ -164,6 +192,68 @@ class Monitor:
             await notify.send(self.settings.options, recipients,
                               f"OmniaCLI {socket.gethostname()}: [{level}] {subject}", text, event=event)
 
+    # --- the causes of the instances read in their log (AD-019 slice 2) ---
+
+    async def instance_causes(self, found: dict[str, list[dict]], measured: set | None = None) -> None:
+        """The causes of now of the instances whose log was read in a round ({key: [cause]}, instancemonitor.
+        log_causes): an instance enters a cause when it has it, and leaves it after CAUSE_CLEAR rounds without.
+        When instances enter a cause, ONE message for that cause tells every instance in it, the new ones marked
+        (12 productions slow at once are one email, not 12); one already in it is not told again while it lasts.
+        Each workspace's people are told of their own instances only; the machine's of all. measured: the
+        instances measured now; one that is not any more (deleted, switched off, a staging stopped) leaves every
+        cause at once, never named again in a message of the others."""
+        stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        changed = False
+        for kind in ALERTED_CAUSES:
+            entry = self.causes.setdefault(kind, {})
+            if measured is not None:
+                for key in [k for k in entry if k not in measured]:
+                    del entry[key]
+                    changed = True
+            entered = []
+            for key, causes in found.items():
+                cause = next((c for c in causes if c.get("kind") == kind), None)
+                if cause is not None:
+                    if key not in entry:
+                        entered.append(key)
+                        entry[key] = {"since": stamp}
+                    entry[key].update(clear=0, cause=_cause_numbers(cause))
+                elif key in entry:
+                    entry[key]["clear"] = entry[key].get("clear", 0) + 1
+                    if entry[key]["clear"] >= CAUSE_CLEAR:
+                        del entry[key]
+                        changed = True
+            if entered:
+                changed = True
+                await self.tell_cause(kind, entry, entered)
+        self.causes = {k: v for k, v in self.causes.items() if v}
+        if changed:
+            # kept at once: after a crash a cause already told is not told again
+            await asyncio.to_thread(self.save)
+
+    async def tell_cause(self, kind: str, entry: dict, entered: list[str]) -> None:
+        """One message for the cause kind to each group of recipients that reads the same instances."""
+        shown: dict[str, set] = {}
+        for key in entry:
+            for recipient in self.recipients(key.partition("/")[0]):
+                shown.setdefault(recipient, set()).add(key)
+        groups: dict[frozenset, list[str]] = {}
+        for recipient, keys in shown.items():
+            if keys & set(entered):
+                groups.setdefault(frozenset(keys), []).append(recipient)
+        level = "warning"
+        for keys, recipients in groups.items():
+            listed = sorted(keys)
+            subject = CAUSE_SUBJECTS[kind].format(n=len(listed)) if len(listed) > 1 else \
+                CAUSE_SUBJECT_ONE[kind].format(key=listed[0])
+            lines = [CAUSE_LINES[kind].format(key=key, **entry[key].get("cause", {}))
+                     + (" " + NEW_MARK if key in entered and len(listed) > 1 else "") for key in listed]
+            text = "\n".join([CAUSE_HEADS[kind], *lines])
+            await notify.send(self.settings.options, recipients,
+                              f"OmniaCLI {socket.gethostname()}: [{level}] {subject}", text,
+                              event={"event": "instances.cause", "level": level, "cause": kind, "instances": listed,
+                                     "new": sorted(set(entered) & keys)})
+
     # --- the checks ------------------------------------------------------
 
     def targets(self) -> list:
@@ -175,7 +265,7 @@ class Monitor:
         port = inst.plugin.web_port(inst)
         started = time.monotonic()
         try:
-            resp = await client.get(f"http://127.0.0.1:{port}/web/login", timeout=TIMEOUT)
+            resp = await client.get(f"http://127.0.0.1:{port}/web/login?{PROBE}=1", timeout=TIMEOUT)
         except httpx.HTTPError as exc:
             return False, None, type(exc).__name__
         ms = int((time.monotonic() - started) * 1000)

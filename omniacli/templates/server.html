@@ -706,6 +706,21 @@ dialog.sd { --dialog-w: 560px; }
     <div class="chart-box"><svg class="chart" data-mon-chart="mem" role="img" aria-label="{{ _('Memory of {key}', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
     <div class="chart-legend" data-mon-legend="mem"></div>
   </details>
+  {# the requests, read from the log of Odoo every 5 minutes (AD-019 slice 2): a source missing is a sentence #}
+  <details class="mon-section" data-mon="requests">
+    <summary title="{{ _('The requests to its Odoo and how long they took, read from its log every 5 minutes') }}"><span class="mon-title">{{ _("Requests") }}</span> <span class="muted mon-line" data-mon-line="requests"></span></summary>
+    <p class="muted mon-req-note" hidden></p>
+    <div class="mon-req-body">
+      <h3 class="chart-title">{{ _("Requests a minute") }}</h3>
+      <div class="chart-box"><svg class="chart" data-mon-chart="req" role="img" aria-label="{{ _('Requests of {key}', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
+      <div class="chart-legend" data-mon-legend="req"></div>
+      <h3 class="chart-title">{{ _("Response time") }}</h3>
+      <div class="chart-box"><svg class="chart" data-mon-chart="time" role="img" aria-label="{{ _('Response time of {key}', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
+      <div class="chart-legend" data-mon-legend="time"></div>
+      {% if can_act %}<h3 class="chart-title">{{ _("The 10 slowest pages") }}</h3>
+      <div class="scroll" data-mon-table="pages"></div>{% endif %}
+    </div>
+  </details>
   {% if can_act and db_tab %}
   <details class="mon-section" data-mon="database">
     <summary title="{{ _('The health of its database: connections, slow queries, what it reads from memory, the largest tables') }}"><span class="mon-title">{{ _("Database") }}</span> <span class="muted mon-line" data-mon-line="database">{{ _("opened, it reads its statistics") }}</span></summary>
@@ -739,9 +754,28 @@ dialog.sd { --dialog-w: 560px; }
 </section>
   </details>
   {% endif %}
+  {% if can_act %}
+  {# the counts of its log over 24 hours and 7 days; each number opens the Log tab on them #}
+  <details class="mon-section" data-mon="log" data-log-tab="{{ 'no' if denied.logs else 'yes' }}">
+    <summary title="{{ _('How many errors, warnings, workers stopped for memory and conflicts its log has, over 24 hours and 7 days') }}"><span class="mon-title">{{ _("The log of Odoo") }}</span> <span class="muted mon-line" data-mon-line="log"></span></summary>
+    <p class="muted mon-log-note" hidden></p>
+    <div class="scroll mon-log-wrap"><table class="mon-log-table">
+      <thead><tr><th scope="col">{{ _("In the log") }}</th><th scope="col">{{ _("24 hours") }}</th><th scope="col">{{ _("7 days") }}</th></tr></thead>
+      <tbody></tbody></table></div>
+    <p class="muted mon-log-zero" hidden></p>
+  </details>
+  {% endif %}
 </section>
 <style>
 .mon-head { flex-wrap: wrap; gap: 8px 16px; }
+.mon-req-note, .mon-log-note, .mon-log-zero { margin: 8px 0; font-size: var(--fs-14); line-height: var(--lh-20); }
+.mon-log-table { width: auto; min-width: 280px; }
+.mon-log-table td, .mon-log-table th { padding: 4px 12px 4px 0; text-align: left; }
+.mon-log-table td.n, .mon-log-table th + th { text-align: right; font-variant-numeric: tabular-nums; }
+.mon-pages td.n, .mon-pages th.n { text-align: right; font-variant-numeric: tabular-nums; }
+.mon-pages td.path { word-break: break-all; font-family: var(--mono); font-size: var(--fs-12); line-height: var(--lh-18); }
+.chart-line.mon-p95 { stroke: var(--cat-3); } .key.mon-p95 { background: var(--cat-3); }
+.chart-line.mon-failed { stroke: var(--err); } .key.mon-failed { background: var(--err); }
 .mon-head h2 { margin: 0; }
 .mon-period { margin: 0; }
 .mon-period button { min-height: 36px; }
@@ -1444,6 +1478,12 @@ dialog.sd { --dialog-w: 560px; }
                 acts: {{ _("Add workers in Settings › Options of Odoo.") | tojson }}},
       database: {machine: {{ _("Its numbers are in Database.") | tojson }}, customer: {{ _("Its numbers are in Database.") | tojson }},
                  acts: {{ _("Its numbers are in Database.") | tojson }}},
+      slow: {machine: {{ _("Look at the slowest pages in Requests and at the costliest operations in Database.") | tojson }},
+             customer: {{ _("Look at the slowest pages in Requests and at the costliest operations in Database.") | tojson }},
+             acts: {{ _("Look at the slowest pages in Requests and at the costliest operations in Database.") | tojson }}},
+      killed: {machine: {{ _("Grant the workspace more memory on its page, or fewer workers in Settings › Options of Odoo.") | tojson }},
+               customer: {{ _("Fewer workers in Settings › Options of Odoo, or ask your provider for more memory.") | tojson }},
+               acts: {{ _("Fewer workers in Settings › Options of Odoo, or ask the administrator of the machine for more memory.") | tojson }}},
     },
     answeredSub: {{ _("of the checks, {period}") | tojson }},
     answeredNone: {{ _("no check {period}") | tojson }},
@@ -1465,6 +1505,68 @@ dialog.sd { --dialog-w: 560px; }
     memLabel: {{ _("Memory of {key} {period}: at most {value} at {time}") | tojson }},
     emptyLabel: {{ _("{what} of {key} {period}: nothing measured") | tojson }},
     processor: {{ _("Processor") | tojson }}, memoryWord: {{ _("Memory") | tojson }},
+    // the requests and the log (AD-019 slice 2)
+    slow: {{ _("Pages answer in {median}, 1 in 20 over {p95}: it is slow when half are over 1 s or 1 in 20 over 3 s.") | tojson }},
+    errors: {{ _("{percent}% of the requests fail ({failed} of {requests}) in the last 15 minutes: the errors are in the Log.") | tojson }},
+    killed: {{ _("{count} workers stopped for memory in the last 15 minutes, at {times}: who was on them got an error.") | tojson }},
+    openRequests: {{ _("Requests ▸") | tojson }}, openLog: {{ _("The log ▸") | tojson }},
+    openLogErrors: {{ _("Errors in the Log ▸") | tojson }},
+    openLogTitle: {{ _("Opens the Log tab on the records of this number") | tojson }},
+    pastKilled: {{ _("{count} workers stopped for memory, the first at {time}.") | tojson }},
+    responseValue: {{ _("half the pages {period}; 1 in 20 over {p95}") | tojson }},
+    failedValue: {{ _("{count} of {total} {period}; above 1% it is to look at") | tojson }},
+    why: {
+      no_file: {{ _("Odoo does not write its log in a file: its requests are not counted") | tojson }},
+      no_access: {{ _("its log level writes no request: they are not counted") | tojson }},
+      unreadable: {{ _("its log could not be read: the requests are not counted") | tojson }},
+      not_yet: {{ _("the log is read every 5 minutes: the first numbers within 5 minutes") | tojson }},
+      none: {{ _("no request {period}") | tojson }},
+      untimed: {{ _("its log writes the requests without their time") | tojson }},
+    },
+    note: {
+      no_file: {{ _("The requests are counted from the log of Odoo, which this instance does not write in a file.") | tojson }},
+      no_access: {{ _("The requests are counted from the access lines of the log of Odoo, which its log level does not write.") | tojson }},
+      unreadable: {{ _("The log of Odoo could not be read: the requests and its counts are not told.") | tojson }},
+      not_yet: {{ _("The log of Odoo is read every 5 minutes: the first numbers come within 5 minutes.") | tojson }},
+      none: {{ _("No request in this period.") | tojson }},
+    },
+    fix: {
+      no_file: {{ _("Give Odoo a log file (the option logfile) and name it in its instance.") | tojson }},
+      no_access: {{ _("Set log_level to info in Settings › Options of Odoo, and do not mute werkzeug.") | tojson }},
+    },
+    gap: {{ _("A gap in the log at {time}: {why}.") | tojson }},
+    gaps: {compressed: {{ _("the rotated file was already compressed") | tojson }},
+           rotated: {{ _("the rotated file was no longer there") | tojson }},
+           truncated: {{ _("the file was cut short") | tojson }},
+           recreated: {{ _("its container was made again") | tojson }}},
+    reqLine: {{ _("{total} requests, {percent}% failed") | tojson }},
+    okSeries: {{ _("Succeeded") | tojson }}, failedSeries: {{ _("Failed") | tojson }},
+    perMinute: {{ _("a minute") | tojson }},
+    medianSeries: {{ _("Half the requests within") | tojson }}, p95Series: {{ _("1 in 20 over") | tojson }},
+    slowRule: {{ _("1 s: it is felt") | tojson }},
+    reqLabel: {{ _("Requests of {key} {period}: {total} in all, {failed} failed") | tojson }},
+    timeLabel: {{ _("Response time of {key} {period}: half within {median}, 1 in 20 over {p95}") | tojson }},
+    pagePath: {{ _("Address") | tojson }}, pageCount: {{ _("Requests") | tojson }},
+    pageMean: {{ _("Mean time") | tojson }}, pageMax: {{ _("The slowest") | tojson }},
+    noPages: {{ _("No page timed in this period.") | tojson }},
+    logLine: {{ _("{errors} errors and {warnings} warnings in the 24 hours") | tojson }},
+    logSince: {{ _("Measured since {time}: the 7 days are shorter.") | tojson }},
+    logRows: {errors: {{ _("Errors") | tojson }}, warnings: {{ _("Warnings") | tojson }},
+              killed: {{ _("Workers stopped for memory") | tojson }}, db_memory: {{ _("Database stopped for memory") | tojson }},
+              retried: {{ _("Conflicts between transactions (retried)") | tojson }},
+              api: {{ _("Calls from the APIs (XML-RPC and JSON-RPC)") | tojson }}},
+    logZero: {{ _("In 7 days none of these: {list}.") | tojson }},
+    logZeroItems: {killed: {{ _("workers stopped for memory") | tojson }}, db_memory: {{ _("database stopped for memory") | tojson }},
+                   retried: {{ _("conflicts between transactions") | tojson }}, api: {{ _("calls from the APIs") | tojson }}},
+    logOpen: {{ _("Opens the Log tab on these records of the {period}") | tojson }},
+    logClosed: {{ _("The Log tab is not open to you: the number cannot be opened") | tojson }},
+    day: {{ _("24 hours") | tojson }}, week: {{ _("7 days") | tojson }},
+    logWhy: {no_file: {{ _("not counted: Odoo writes no log file") | tojson }},
+              unreadable: {{ _("not counted: its log could not be read") | tojson }},
+              not_yet: {{ _("the first counts within 5 minutes") | tojson }}},
+    logNote: {no_file: {{ _("Its counts come from the log of Odoo, which this instance does not write in a file.") | tojson }},
+              unreadable: {{ _("The log of Odoo could not be read: the requests and its counts are not told.") | tojson }},
+              not_yet: {{ _("The log of Odoo is read every 5 minutes: the first numbers come within 5 minutes.") | tojson }}},
   };
   const LANG = document.documentElement.lang || "en";
   const num = (n, digits = 1) => Number(n).toLocaleString(LANG, {maximumFractionDigits: digits});
@@ -1489,12 +1591,39 @@ dialog.sd { --dialog-w: 560px; }
   function opener(name) {
     const fold = section(name);
     if (!fold) return null;
-    const a = Object.assign(document.createElement("a"), {href: "#monitor", textContent: name === "load" ? M.openLoad : M.openDatabase, title: M.openTitle});
+    const words = {load: M.openLoad, database: M.openDatabase, requests: M.openRequests, log: M.openLog};
+    const a = Object.assign(document.createElement("a"), {href: "#monitor", textContent: words[name] || name, title: M.openTitle});
     a.addEventListener("click", (ev) => { ev.preventDefault(); fold.open = true; fold.scrollIntoView({block: "start"}); });
     return a;
   }
 
+  // the Log tab on the records of a number: its span, its levels, its words (OmniaOdooLog.show); none when the
+  // Log tab is not open to this person
+  const logBox = () => document.querySelector(".log-panel .console-box");
+  const logTab = () => document.querySelector('.tabs [data-tab="log"]');
+  function logLink(text, filter, title) {
+    const tab = logTab();
+    if (!tab || tab.disabled || !logBox()) return Object.assign(document.createElement("span"), {textContent: text, title: M.logClosed});
+    const a = Object.assign(document.createElement("a"), {href: "#log", textContent: text, title});
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      tab.click();
+      const now = new Date();
+      logBox().omniaLog?.show({from: new Date(now - filter.seconds * 1000), to: now, levels: filter.levels || [], text: filter.text || ""});
+    });
+    return a;
+  }
+  // what each row of the log's counts opens in the Log tab (the words are Odoo's own, in English)
+  const LOG_FILTERS = {errors: {levels: ["ERROR", "CRITICAL"]}, warnings: {levels: ["WARNING"]},
+                       killed: {text: "memory limit"},
+                       db_memory: {text: "out of memory | recovery mode | crash of another server process"},
+                       retried: {text: "tries left"}, api: {text: "/xmlrpc/ | /jsonrpc | /json/2/"}};
+  const secs = (v) => v === null || v === undefined ? "—" : `${num(v, v < 10 ? 2 : 1)} s`;
+
   function causeText(c) {
+    if (c.kind === "slow") return fill(M.slow, {median: secs(c.median), p95: secs(c.p95)});
+    if (c.kind === "errors") return fill(M.errors, {percent: num(c.percent), failed: num(c.failed, 0), requests: num(c.requests, 0)});
+    if (c.kind === "killed") return fill(M.killed, {count: c.count, times: (c.at || []).map(at).join(", ")});
     if (c.kind === "cpu") return fill(M.cpu, {value: c.value, cores: num(c.cores, 1), minutes: c.minutes, threshold: c.threshold});
     if (c.kind === "memory") return fill(c.workspace ? M.memoryShared : M.memory, {value: c.value, limit: mib(c.limit), minutes: c.minutes, threshold: c.threshold});
     if (c.kind === "workers") return fill(M.workers, {workers: c.workers, minutes: c.minutes});
@@ -1520,6 +1649,7 @@ dialog.sd { --dialog-w: 560px; }
       if (remedy) li.append(" ", Object.assign(document.createElement("span"), {className: "mon-remedy", textContent: remedy}));
       const link = opener(c.section);
       if (link) li.append(" ", link);
+      if (c.kind === "errors" && who !== "reads") li.append(" ", logLink(M.openLogErrors, {seconds: 3600, levels: ["ERROR", "CRITICAL"]}, M.openLogTitle));
       li.hidden = i >= 5;
       return li;
     });
@@ -1539,8 +1669,18 @@ dialog.sd { --dialog-w: 560px; }
     }
     const past = box.querySelector(".mon-past");
     const down = (data.past || []).find((p) => p.kind === "down");
-    past.hidden = !down;
-    past.textContent = down ? `${M.pastHead[data.period]} ${fill(M.pastDown, {duration: lasting(down.minutes * 60), time: (data.period === "1h" ? at : day)(down.at)})}` : "";
+    const killed = (data.past || []).find((p) => p.kind === "killed");
+    const said = (data.period === "1h" ? at : day);
+    past.replaceChildren();
+    if (down || killed) past.append(M.pastHead[data.period]);
+    if (down) past.append(" ", fill(M.pastDown, {duration: lasting(down.minutes * 60), time: said(down.at)}));
+    if (killed) {
+      if (down) past.append(" ·");
+      past.append(" ", fill(M.pastKilled, {count: killed.count, time: said(killed.at)}));
+      const link = opener("log") || opener("load");
+      if (link) past.append(" ", link);
+    }
+    past.hidden = !(down || killed);
   }
 
   function tile(name, value, sub) {
@@ -1553,8 +1693,11 @@ dialog.sd { --dialog-w: 560px; }
     const t = data.tiles, when = M.periods[data.period];
     tile("answered", t.answered.value === null ? "—" : num(t.answered.value) + "%",
          fill(t.answered.value === null ? M.answeredNone : M.answeredSub, {period: when}));
-    tile("response", "—", M.responseSub);
-    tile("failed", "—", M.failedSub);
+    const r = t.response, f = t.failed;
+    if (r.value === null || r.value === undefined) tile("response", "—", fill(M.why[r.reason] || M.responseSub, {period: when}));
+    else tile("response", secs(r.value), fill(M.responseValue, {period: when, p95: secs(r.p95)}));
+    if (f.value === null || f.value === undefined) tile("failed", "—", fill(M.why[f.reason] || M.failedSub, {period: when}));
+    else tile("failed", num(f.value) + "%", fill(M.failedValue, {count: num(f.count, 0), total: num(f.requests, 0), period: when}));
     const m = t.memory;
     tile("memory", m.value === null || m.value === undefined ? "—" : mib(m.value), m.value === null ? fill(M.memoryNone, {period: when})
       : fill(m.limit ? M.memorySub : M.memoryNoLimit, {max: mib(m.max ?? m.value), period: when, limit: mib(m.limit || 0),
@@ -1613,6 +1756,101 @@ dialog.sd { --dialog-w: 560px; }
       : fill(M.loadLine, {cpu: num(cpuMax, 0), mem: mib(data.tiles.memory.max ?? memMax)});
   }
 
+  // Requests: two charts and the slowest pages, or the sentence of why there are none (UX-018 §6.2)
+  function drawRequests(data) {
+    const q = data.requests, fold = section("requests");
+    if (!q || !fold) return;
+    const when = M.periods[data.period], key = box.dataset.key, source = q.source;
+    const note = fold.querySelector(".mon-req-note"), body = fold.querySelector(".mon-req-body");
+    const missing = ["no_file", "no_access", "unreadable", "not_yet"].includes(source);
+    const lines = [];
+    if (missing || source === "none") lines.push(M.note[source]);
+    // the option to change: logfile is the machine's admin's (the instance's own settings), log_level whoever acts
+    if ((source === "no_file" && who === "machine") || (source === "no_access" && who !== "reads")) lines.push(M.fix[source]);
+    for (const g of q.gaps || []) lines.push(fill(M.gap, {time: (data.period === "1h" ? at : day)(g.t), why: M.gaps[g.why] || g.why}));
+    note.textContent = lines.join(" ");
+    note.hidden = !lines.length;
+    body.hidden = missing;
+    const line = fold.querySelector('[data-mon-line="requests"]');
+    line.textContent = missing ? (M.why[source] || "") : q.total ? fill(M.reqLine, {total: num(q.total, 0), percent: num(100 * q.failed / q.total)})
+      : fill(M.why.none, {period: when});
+    if (missing) return;
+    const span = {"1h": 3600, "24h": 86400, "7d": 604800, "14d": 1209600}[data.period], long = data.period !== "1h";
+    // a minute's rate: each point covers its minutes
+    const points = (q.points || []).map((p) => ({...p, okm: p.ok / (p.minutes || 5), failm: p.failed / (p.minutes || 5)}));
+    const opts = {gap: 300 * 2.5 * (points[0]?.minutes ? points[0].minutes / 5 : 1), from: data.now - span, to: data.now,
+                  when: long ? day : at, format: (v) => v.toFixed(1)};
+    const reqSvg = fold.querySelector('[data-mon-chart="req"]'), timeSvg = fold.querySelector('[data-mon-chart="time"]');
+    OmniaCharts.draw(reqSvg, points, "okm", {...opts, unit: "", format: (v) => v.toFixed(0), lines: [{cls: "mon-failed", value: (p) => p.failm}],
+      tip: (p) => `${M.okSeries} ${num(p.okm)} · ${M.failedSeries} ${num(p.failm)} ${M.perMinute}`});
+    OmniaCharts.draw(timeSvg, points.filter((p) => p.median !== null), "median", {...opts, unit: " s", minMax: 1.2,
+      lines: [{cls: "mon-p95", value: (p) => p.p95}], rules: [{cls: "mon-thr", value: 1}],
+      tip: (p) => `${M.medianSeries} ${secs(p.median)} · ${M.p95Series} ${secs(p.p95)}`});
+    reqSvg.setAttribute("aria-label", fill(M.reqLabel, {key, period: when, total: num(q.total || 0, 0), failed: num(q.failed || 0, 0)}));
+    timeSvg.setAttribute("aria-label", fill(M.timeLabel, {key, period: when, median: secs(q.median), p95: secs(q.p95)}));
+    OmniaCharts.legend(fold.querySelector('[data-mon-legend="req"]'), [
+      {label: M.okSeries, cls: "s1", value: `${num((q.total - q.failed) || 0, 0)}`},
+      {label: M.failedSeries, cls: "mon-failed", value: `${num(q.failed || 0, 0)}`}]);
+    OmniaCharts.legend(fold.querySelector('[data-mon-legend="time"]'), [
+      {label: M.medianSeries, cls: "s1", value: secs(q.median)}, {label: M.p95Series, cls: "mon-p95", value: secs(q.p95)},
+      {label: M.slowRule, cls: "mon-thr", value: "1 s"}]);
+    const pages = fold.querySelector('[data-mon-table="pages"]');
+    if (pages && q.pages) {
+      if (!q.pages.length) { pages.replaceChildren(Object.assign(document.createElement("p"), {className: "muted", textContent: M.noPages})); return; }
+      const table = document.createElement("table");
+      table.className = "mon-pages";
+      const head = table.createTHead().insertRow();
+      for (const [label, n] of [[M.pagePath, false], [M.pageCount, true], [M.pageMean, true], [M.pageMax, true]]) {
+        const th = document.createElement("th");
+        th.scope = "col"; th.textContent = label; if (n) th.className = "n";
+        head.append(th);
+      }
+      const rows = table.createTBody();
+      for (const p of q.pages) {
+        const tr = rows.insertRow();
+        tr.insertCell().append(Object.assign(document.createElement("span"), {textContent: p.path}));
+        tr.cells[0].className = "path";
+        for (const v of [num(p.count, 0), secs(p.mean), secs(p.max)]) { const td = tr.insertCell(); td.className = "n"; td.textContent = v; }
+      }
+      pages.replaceChildren(table);
+    }
+  }
+
+  // The log of Odoo: its counts over 24 hours and 7 days, each one a way into the Log tab
+  function drawLog(data) {
+    const fold = section("log");
+    if (!fold || !data.log) return;
+    const log = data.log, note = fold.querySelector(".mon-log-note"), zero = fold.querySelector(".mon-log-zero");
+    const table = fold.querySelector(".mon-log-wrap"), line = fold.querySelector('[data-mon-line="log"]');
+    if (log.source) {
+      note.textContent = M.logNote[log.source] || ""; note.hidden = !note.textContent;
+      table.hidden = true; zero.hidden = true; line.textContent = M.logWhy[log.source] || "";
+      return;
+    }
+    table.hidden = false;
+    note.textContent = log.since ? fill(M.logSince, {time: whenText(new Date(log.since * 1000))}) : "";
+    note.hidden = !note.textContent;
+    line.textContent = fill(M.logLine, {errors: num(log.day.errors, 0), warnings: num(log.day.warnings, 0)});
+    const rows = [], zeros = [];
+    for (const name of ["errors", "warnings", "killed", "db_memory", "retried", "api"]) {
+      if (!(name in log.day)) continue;
+      if (!["errors", "warnings"].includes(name) && !log.day[name] && !log.week[name]) { zeros.push(M.logZeroItems[name]); continue; }
+      const tr = document.createElement("tr");
+      tr.append(Object.assign(document.createElement("td"), {textContent: M.logRows[name]}));
+      for (const [period, seconds] of [["day", 86400], ["week", 604800]]) {
+        const td = Object.assign(document.createElement("td"), {className: "n"});
+        const value = num(log[period][name], 0);
+        td.append(fold.dataset.logTab === "yes" ? logLink(value, {seconds, ...LOG_FILTERS[name]}, fill(M.logOpen, {period: M[period]}))
+                  : Object.assign(document.createElement("span"), {textContent: value, title: M.logClosed}));
+        tr.append(td);
+      }
+      rows.push(tr);
+    }
+    fold.querySelector("tbody").replaceChildren(...rows);
+    zero.textContent = zeros.length ? fill(M.logZero, {list: zeros.join(", ")}) : "";
+    zero.hidden = !zeros.length;
+  }
+
   async function load() {
     if (box.hidden) return;
     // a read in flight (the first can take seconds: its database's statistics) gives way to the new one, a
@@ -1634,6 +1872,8 @@ dialog.sd { --dialog-w: 560px; }
       drawVerdict(data);
       drawTiles(data);
       drawLoad(data);
+      drawRequests(data);
+      drawLog(data);
       note.textContent = data.measured_from ? fill(M.measuredFrom, {time: whenText(new Date(data.measured_from * 1000))}) : "";
       note.hidden = !note.textContent;
     } catch (e) {

@@ -150,8 +150,9 @@ const OmniaOdooLog = (function () {
       if (follow.checked && mode === "now") out.scrollTop = out.scrollHeight;
     }, true);
 
+    // words apart with " | " are one or the other (the monitor opens the log on several of Odoo's words)
     const shown = (rec) => (!chosen.size || chosen.has(rec.level))
-      && (!text || rec.low.includes(text));
+      && (!text || text.split(" | ").some((word) => word && rec.low.includes(word)));
     function draw(rec) {
       rec.low = rec.lines.join("\n").toLowerCase();
       if (!rec.el) {
@@ -394,6 +395,23 @@ const OmniaOdooLog = (function () {
     document.addEventListener("visibilitychange", () => { if (!document.hidden) schedule(0); });
     state.textContent = T.lazy;
     tell();
+    // the monitor's way in (UX-018 §5): the span from..to read, only these levels, only these words
+    function show(filter) {
+      chosen = new Set(filter.levels || []);
+      for (const button of levelButtons) button.setAttribute("aria-pressed", String(chosen.has(button.dataset.tag)));
+      text = (filter.text || "").trim().toLowerCase();
+      box.querySelector(".console-search").value = filter.text || "";
+      choice.value = "custom";
+      custom.hidden = false;
+      box.querySelector(".olog-follow").hidden = true;
+      const field = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      box.querySelector(".olog-from").value = field(filter.from);
+      box.querySelector(".olog-to").value = field(filter.to);
+      readSpan(filter.from, filter.to, "last");
+    }
+    const controller = {show};
+    box.omniaLog = controller;
+    return controller;
   }
   return {attach};
 })();

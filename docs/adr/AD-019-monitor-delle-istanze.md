@@ -96,6 +96,7 @@ Un punto al giorno alle 05:00, dopo i backup:
 - **Dove**: `monitor/<server>/<role>/`, nello stato della macchina (600/700), un file per giorno, solo righe aggiunte. Per lo stesso tipo e istante vince l'ultima riga, quindi una ripresa non conta due volte. La cartella è nel purge.
 - **Tenuta**: punti e pagine 14 giorni, spazio 400 giorni.
 - **Peso**: ≈ 2,2 MB per istanza (stima), con un tetto di 5 MB oltre il quale si tolgono i giorni più vecchi («Misurato dal…»). 20 istanze ≈ 44 MB, al più 100 MB.
+- **Peso, ridetto con la fetta 2** (27/11/2026): il tetto resta 5 MB. Al giorno, al più: 288 punti del carico (≈ 130 byte), 2 righe del log per ogni lettura di 5 minuti (≈ 160 byte: una campata si riscrive intera quando la lettura dopo ne porta altre righe), 24 righe di pagine (50 pagine, ≈ 3,4 KB). Fanno ≈ 210 KB al giorno, ≈ 2,9 MB in 14 giorni (calcolato, `test_the_history_stays_under_its_cap`). Il cursore (`cursor.json`, 600) tiene la posizione e le campate delle ultime 2 ore.
 
 ### 19.6: Pagina, centrale, API
 
@@ -124,6 +125,32 @@ Misurato su lab3 (16 core, Docker 28, Odoo 19.0 `odoo:19.0`), su `acme-zipt-stg-
 - **Connessioni sotto carico, 4 worker** (`/web/login`, 20 s per prova): le `ESTABLISHED` sulla porta pubblicata (il lato del proxy di Docker) seguono le richieste in corso, code comprese: 2 client → 2 (mediana), 4 → 4, 8 → 10, 16 → 19; ≈ 195 richieste al secondo con 4 worker. Il lato verso il contenitore (porta 8069) non compare nella tabella della macchina: si conta la porta pubblicata. Quindi worker occupati = min(connessioni, `workers`), e «tutti occupati» quando le connessioni sono almeno `workers`.
 - **`/proc/net/tcp` costa troppo sotto carico**: a 195 richieste al secondo ha 15.903 righe (le `TIME_WAIT`); leggerlo costa 45 ms da solo e fino a 440 ms in un processo carico. `ss -Htn state established` filtra nel kernel: 29 ms a chiamata. **Corretto in 19.1**: una chiamata `ss` ogni 5 s per tutte le istanze, contata per porta.
 - **Il cluster della macchina**: il campionatore leggeva `system-postgresql.slice`, il cluster è in `omniacli_machine_db.slice` (`machinedb.SLICE`): corretto nella fetta 1.
+
+## Fetta 2: richieste e log (27/11/2026, lab3 e lab4)
+
+Costruita sul branch `monitor-s2`. Codice: `odoolog.py` (cosa si conta), `instancelog.py` (la lettura in coda e il cursore), `composehelper.log_read` (i byte del json-file), `instancemonitor.py` (le cause, le tile, le sezioni), `monitor.Monitor.instance_causes` (gli avvisi).
+
+- **Il helper `log-read`** prende servizio, id del container, inode e offset: mai un percorso. Trova il container con `docker ps` sulle etichette di compose (`project.working_dir`, `service`) e il json-file con `docker inspect`, legge al più 4 MiB fino all'ultima riga intera. Un file ruotato (`.1`…`.20`) si finisce dal vecchio inode; uno compresso, un container rifatto o un file accorciato sono un buco detto sulla pagina. Costo misurato su lab3: **0,20 s di CPU a lettura** (due chiamate a `docker` più la lettura), non 0,13 s: 20 istanze ogni 300 s fanno ≈ 1,3% di un core.
+- **Le righe d'accesso vere**: 19 su lab3 sotto carico; 16, 17 e 20 dalle immagini `odoo:16.0`, `17.0` e `20.0` senza database (database «?»). La 20 scrive l'id corto della sessione al posto del secondo campo e il tempo SQL intero quando è 0. La 19 sotto carico non ha mostrato `#modello.metodo` su `/json/2/`: il lettore lo toglie comunque dal percorso.
+- **Il tempo di una richiesta** è tempo SQL più il resto. Non si contano il websocket (101) e il longpolling della 16: durano quanto resta aperto il browser.
+- **Le cause**: «Lenta» e «Errori» chiedono almeno 20 richieste nelle tre campate dell'ultima lettura. Un'istanza quasi ferma, con 2 richieste lente su 3, non è lenta. «1 su 20» è il 95° percentile letto nelle classi, preso strettamente oltre il bordo: con 5 richieste su 100 oltre 5 s, «1 su 20 oltre» dice 5 s, non 0,1 s.
+- **«Database fermato per memoria»** si legge nel log di Odoo: «out of memory», «crash of another server process», «recovery mode». Vale per ogni posto del database. Il `memory.events` del servizio `db` non è letto in questa fetta.
+- **Avvisi**: un'istanza entra in una causa quando l'ha in una lettura ed esce dopo 3 letture senza (15 minuti). Si scrive solo quando qualcuna entra: un messaggio per causa, con tutte le istanze dentro e le nuove segnate. Il workspace riceve solo le sue istanze, Opzioni › Monitoraggio tutte. L'evento per i webhook è `instances.cause`. Quando una causa finisce non parte nessun messaggio.
+- **Dopo la revisione** (27/11/2026):
+  - si legge solo il container del servizio (`oneoff=False`, non l'anteprima `next_name`), mai quello di un `compose run`;
+  - `/web/health` e il controllo del monitor (`/web/login?omniacli-monitor=1`) non sono richieste;
+  - non si conta come avviso il WARNING di Odoo «called ignoring args» (`odoo.http`, scritto per ogni argomento che una route non prende). I 7.401 avvisi di lab3 erano questo: la raffica di prova passava `?pad=` a `/web/health`;
+  - nei percorsi niente testo del cliente: nomi di file `<f>`, slug `<x>-<n>`, parole di 16 lettere `<x>`, `%xx` decodificato prima;
+  - le cause si salvano appena cambiano, e un'istanza non più misurata esce da tutte;
+  - una rincorsa di ore tiene intere le sue campate fino a quando la lettura le ha passate.
+- **Un job su un'istanza compose** legge prima il suo log per intero, oltre i 20 MB del giro normale, per al più 60 s, 15 s a lettura; una lettura lasciata a metà chiude il suo helper.
+
+Prove sul lab (27/11/2026):
+
+- **Criterio 1**, su lab3 `acme-odoo`. Carico di 21 minuti: 1 richiesta su 19 oltre 3 s (un'azione server che dorme 3,4 s) e 1 su 50 con 500 (un'azione che divide per zero), dall'API JSON-2. Cominciato alle 06:28:50, «Da guardare» alle 06:33:50, cioè 5 minuti dopo. Le righe: «1 su 20 oltre 3,07 s … supera 3 s» e «Il 2% delle richieste non riesce (72 su 3593)».
+- **0 righe perse**. Durante il carico ci sono state una rotazione di Docker (7.400 richieste con 7.000 caratteri di query string: il json-file a 50 MB è diventato `.1`) e un «Aggiorna» (pull, update dei moduli, riavvio). Il conteggio del monitor per ogni campata di 5 minuti coincide con le righe d'accesso del log di Odoo (`docker logs`). Dalle 06:30 alle 06:50 le campate hanno 3.691, 10.989, 3.749 e 3.599 righe, 22.028 in tutto, uguali. Per leggere i 52 MB della rotazione sono servite 3 letture: il tetto di 20 MB a giro ritarda i numeri, non li perde.
+- **Avvisi raggruppati**: `acme-odoo` e `acme-zipt` lente e con errori nella stessa lettura. Sono partite 2 e-mail (Mailpit di lab3), una «2 istanze sono lente» e una «2 istanze non riescono a rispondere a delle richieste», ciascuna con le due istanze. Una terza e-mail è partita 20 minuti dopo, solo per `acme-odoo` «(nuova)». La raffica di richieste veloci aveva diluito la quota delle lente sotto 1 su 20 per 3 letture, quindi `acme-odoo` era uscita dalla causa e poi ci è rientrata. Non è una ripetizione ogni 5 minuti.
+- **Criterio 12**, su lab4: un'istanza venv con `logfile` vuoto mostra «—» nel tempo di risposta e la frase di §6.2.
 
 ## 8. Vincoli per il dev-lead
 
@@ -173,7 +200,7 @@ In tutto ≈ 10,5 g. Le fette 1-2 (6,5 g) rispondono a «sta bene? se no, perch�
 
 - Che un worker ucciso da `limit_time_real` lasci una riga ERROR. Senza `werkzeug`, «non riuscite» lo perde; oltre l'1% si riapre C.
 - 2,2 MB: stima (il costo del log è misurato, fetta 0).
-- Le righe d'accesso di 16, 17 e 18 su un'istanza vera: sui lab c'è solo la 19; per 16-18 vale la lettura dei sorgenti.
+- Le righe d'accesso della 18 su un'istanza vera: sui lab non c'è l'immagine; vale la lettura dei sorgenti. Quelle di 16, 17 e 20 sono misurate (fetta 2, senza database).
 
 ## 11. Scartate
 
