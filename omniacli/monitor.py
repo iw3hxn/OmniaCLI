@@ -66,6 +66,9 @@ METRIC_LABELS = {"cpu": "CPU", "ram": "Memory"}
 AGENT_RELAY = "agent-relay"
 
 
+# the monitor's own check, in its query string: the monitor of an instance does not count it among its requests
+# (odoolog.PROBE)
+PROBE = "omniacli-monitor"
 # the causes of an instance read in its log that are told (Carlo, 26/11/2026: at once, grouped by cause); an
 # instance leaves a cause after CAUSE_CLEAR rounds of the log (5 minutes each) without it
 ALERTED_CAUSES = ("slow", "errors", "killed")
@@ -191,15 +194,22 @@ class Monitor:
 
     # --- the causes of the instances read in their log (AD-019 slice 2) ---
 
-    async def instance_causes(self, found: dict[str, list[dict]]) -> None:
+    async def instance_causes(self, found: dict[str, list[dict]], measured: set | None = None) -> None:
         """The causes of now of the instances whose log was read in a round ({key: [cause]}, instancemonitor.
         log_causes): an instance enters a cause when it has it, and leaves it after CAUSE_CLEAR rounds without.
         When instances enter a cause, ONE message for that cause tells every instance in it, the new ones marked
         (12 productions slow at once are one email, not 12); one already in it is not told again while it lasts.
-        Each workspace's people are told of their own instances only; the machine's of all."""
+        Each workspace's people are told of their own instances only; the machine's of all. measured: the
+        instances measured now; one that is not any more (deleted, switched off, a staging stopped) leaves every
+        cause at once, never named again in a message of the others."""
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        changed = False
         for kind in ALERTED_CAUSES:
             entry = self.causes.setdefault(kind, {})
+            if measured is not None:
+                for key in [k for k in entry if k not in measured]:
+                    del entry[key]
+                    changed = True
             entered = []
             for key, causes in found.items():
                 cause = next((c for c in causes if c.get("kind") == kind), None)
@@ -212,9 +222,14 @@ class Monitor:
                     entry[key]["clear"] = entry[key].get("clear", 0) + 1
                     if entry[key]["clear"] >= CAUSE_CLEAR:
                         del entry[key]
+                        changed = True
             if entered:
+                changed = True
                 await self.tell_cause(kind, entry, entered)
         self.causes = {k: v for k, v in self.causes.items() if v}
+        if changed:
+            # kept at once: after a crash a cause already told is not told again
+            await asyncio.to_thread(self.save)
 
     async def tell_cause(self, kind: str, entry: dict, entered: list[str]) -> None:
         """One message for the cause kind to each group of recipients that reads the same instances."""
@@ -250,7 +265,7 @@ class Monitor:
         port = inst.plugin.web_port(inst)
         started = time.monotonic()
         try:
-            resp = await client.get(f"http://127.0.0.1:{port}/web/login", timeout=TIMEOUT)
+            resp = await client.get(f"http://127.0.0.1:{port}/web/login?{PROBE}=1", timeout=TIMEOUT)
         except httpx.HTTPError as exc:
             return False, None, type(exc).__name__
         ms = int((time.monotonic() - started) * 1000)

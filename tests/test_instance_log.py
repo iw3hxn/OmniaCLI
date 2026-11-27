@@ -87,7 +87,7 @@ def test_the_access_lines_written_by_odoo_16_17_and_20():
     for line in real:
         counter.line(line.format(t=HEAD))
     tally = counter.spans[NOW]
-    assert (tally["rq"], tally["tm"], tally["rf"]) == (6, 6, 0)
+    assert (tally["rq"], tally["tm"], tally["rf"]) == (4, 4, 0)  # /web/health is no page (review of monitor-s2)
     assert tally["h"][odoolog.time_class(0.580)] == 1 and tally["h"][odoolog.time_class(0.235)] == 1
 
 
@@ -126,7 +126,7 @@ def test_a_pages_path_keeps_no_query_string_nor_a_token():
     assert odoolog.normalised("/web/assets/1a2b3c4d5e6f/web.assets_web.min.js") == "/web/assets/<x>/web.assets_web.min.js"
     assert odoolog.normalised("/mail/view?token=abc") == "/mail/view"
     assert odoolog.normalised("/report/pdf/a/" + "x" * 300).startswith("/report/pdf/a/")
-    assert len(odoolog.normalised("/" + "z" * 500)) == odoolog.PATH_MOST
+    assert len(odoolog.normalised("/abc" * 200)) == odoolog.PATH_MOST
     assert odoolog.normalised('/a"b<c>') == "/a_b_c_"
 
 
@@ -403,7 +403,9 @@ async def test_a_job_reads_the_log_of_a_compose_instance_before_it_begins(tmp_pa
 def _monitor(tmp_path, workspaces_=None):
     options = type("O", (), {"monitor_notify": ["ops@example.com"]})()
     settings = type("S", (), {"options": options, "workspaces": workspaces_ or {}})()
-    return monitor_module.Monitor.__new__(monitor_module.Monitor), settings
+    mon = monitor_module.Monitor.__new__(monitor_module.Monitor)
+    mon.path, mon.instances, mon.machine = tmp_path / "monitor.json", {}, {}
+    return mon, settings
 
 
 async def test_one_alert_for_many_instances_slow_at_once_and_not_every_5_minutes(tmp_path, monkeypatch):

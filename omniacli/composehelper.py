@@ -1128,15 +1128,24 @@ def _docker(*args: str) -> subprocess.CompletedProcess:
 
 
 def log_container(project: Path, name: str) -> tuple[str, Path] | None:
-    """(id, the json-file) of the service's container: the running one, else the last started; None: none."""
+    """(id, the json-file) of the service's own container (up's, never one of compose run: an update, a verify, the
+    preview of the new code next_name(), whose logs are not the instance's): the running one, else the last started;
+    None: none."""
     found = _docker("ps", "-a", "-q", "--no-trunc", "--filter", f"label=com.docker.compose.project.working_dir={project}",
-                    "--filter", f"label=com.docker.compose.service={name}")
+                    "--filter", f"label=com.docker.compose.service={name}",
+                    "--filter", "label=com.docker.compose.oneoff=False")
     ids = [i for i in found.stdout.split() if CONTAINER_ID.fullmatch(i)]
     if found.returncode or not ids:
         return None
-    seen = _docker("inspect", "--format", "{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}|{{.LogPath}}", *ids)
-    rows = [line.split("|", 3) for line in seen.stdout.splitlines() if line.count("|") >= 3]
-    rows = [r for r in rows if CONTAINER_ID.fullmatch(r[0]) and r[3].startswith("/")]
+    seen = _docker("inspect", "--format", "{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}|{{.LogPath}}|"
+                   '{{index .Config.Labels "com.docker.compose.oneoff"}}|{{.Name}}', *ids)
+    try:
+        preview = "/" + next_name(project)
+    except HelperError:
+        preview = None
+    rows = [line.split("|", 5) for line in seen.stdout.splitlines() if line.count("|") >= 5]
+    rows = [r for r in rows if CONTAINER_ID.fullmatch(r[0]) and r[3].startswith("/") and r[4] == "False"
+            and r[5] != preview]
     if not rows:
         return None
     best = max(rows, key=lambda r: (r[1] == "true", r[2]))

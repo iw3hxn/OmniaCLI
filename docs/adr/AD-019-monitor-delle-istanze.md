@@ -136,7 +136,14 @@ Costruita sul branch `monitor-s2`. Codice: `odoolog.py` (cosa si conta), `instan
 - **Le cause**: «Lenta» e «Errori» chiedono almeno 20 richieste nelle tre campate dell'ultima lettura. Un'istanza quasi ferma, con 2 richieste lente su 3, non è lenta. «1 su 20» è il 95° percentile letto nelle classi, preso strettamente oltre il bordo: con 5 richieste su 100 oltre 5 s, «1 su 20 oltre» dice 5 s, non 0,1 s.
 - **«Database fermato per memoria»** si legge nel log di Odoo: «out of memory», «crash of another server process», «recovery mode». Vale per ogni posto del database. Il `memory.events` del servizio `db` non è letto in questa fetta.
 - **Avvisi**: un'istanza entra in una causa quando l'ha in una lettura ed esce dopo 3 letture senza (15 minuti). Si scrive solo quando qualcuna entra: un messaggio per causa, con tutte le istanze dentro e le nuove segnate. Il workspace riceve solo le sue istanze, Opzioni › Monitoraggio tutte. L'evento per i webhook è `instances.cause`. Quando una causa finisce non parte nessun messaggio.
-- **Un job su un'istanza compose** legge prima il suo log per intero, oltre i 20 MB del giro normale, per al più 120 s.
+- **Dopo la revisione** (27/11/2026):
+  - si legge solo il container del servizio (`oneoff=False`, non l'anteprima `next_name`), mai quello di un `compose run`;
+  - `/web/health` e il controllo del monitor (`/web/login?omniacli-monitor=1`) non sono richieste;
+  - non si conta come avviso il WARNING di Odoo «called ignoring args» (`odoo.http`, scritto per ogni argomento che una route non prende). I 7.401 avvisi di lab3 erano questo: la raffica di prova passava `?pad=` a `/web/health`;
+  - nei percorsi niente testo del cliente: nomi di file `<f>`, slug `<x>-<n>`, parole di 16 lettere `<x>`, `%xx` decodificato prima;
+  - le cause si salvano appena cambiano, e un'istanza non più misurata esce da tutte;
+  - una rincorsa di ore tiene intere le sue campate fino a quando la lettura le ha passate.
+- **Un job su un'istanza compose** legge prima il suo log per intero, oltre i 20 MB del giro normale, per al più 60 s, 15 s a lettura; una lettura lasciata a metà chiude il suo helper.
 
 Prove sul lab (27/11/2026):
 

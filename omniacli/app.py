@@ -773,7 +773,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     # errors, workers stopped for memory) told by the monitor, grouped by cause (defined further down)
     instance_log = instancelog.InstanceLog(settings, instance_history, measured=lambda key: key.endswith("/production"),
                                            role_state=workspacehelper.role_state,
-                                           told=lambda found: monitor.instance_causes(found))
+                                           told=lambda found, measured: monitor.instance_causes(found, measured))
     instance_log.causes = lambda key, now=None: instancemonitor.log_causes(
         instance_history.points(key, (now or time.time()) - 1800, "log"), instance_log.read_state(key).get("at"),
         now or time.time())

@@ -44,7 +44,8 @@ CATCH_UP = 20 * 1024 * 1024  # bytes read at most in a round
 KEEP_OPEN = 2 * 3600  # the spans kept in the cursor, to be written again whole when more of them is read
 CURSOR = "cursor.json"
 READ_TIMEOUT = 60
-BEGIN_MOST = 120  # seconds a job waits at most for the log of its instance to be read whole before it begins
+BEGIN_MOST = 60  # seconds a job waits at most for the log of its instance to be read whole before it begins
+BEGIN_READ = 15  # seconds one read of that may take (a docker that hangs holds the job's locks no longer)
 # why the log of an instance gives no requests: told as a sentence, never a zero (UX-018 §6.2)
 NO_FILE = "no_file"  # a venv whose Odoo writes no file (stdout, the journal)
 NO_ACCESS = "no_access"  # its log level writes no access line (warn, or werkzeug muted)
@@ -146,6 +147,21 @@ def read_file(path: Path, cursor: dict, most: int = CATCH_UP) -> tuple[list[str]
     return lines, {"inode": inode, "pos": pos}, gap, more and read >= most
 
 
+async def _end(proc) -> None:
+    """The helper ended: SIGTERM, which sudo passes to it, then SIGKILL to sudo after 2 s."""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+        await asyncio.wait_for(proc.wait(), 2)
+    except (asyncio.TimeoutError, ProcessLookupError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        await proc.wait()
+
+
 async def helper_read(instance, cursor: dict) -> tuple[bytes, dict, str | None, bool]:
     """One log-read of the root helper: (bytes, the new cursor, a gap's reason or None, more)."""
     service = instance.plugin.log_service(instance)
@@ -158,9 +174,12 @@ async def helper_read(instance, cursor: dict) -> tuple[bytes, dict, str | None, 
     try:
         out, err = await asyncio.wait_for(proc.communicate(), READ_TIMEOUT)
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        await _end(proc)
         raise OSError("the helper did not answer") from None
+    except asyncio.CancelledError:
+        # a read given up (a job's pre-read past its time, OmniaCLI stopping): the helper does not stay behind
+        await asyncio.shield(_end(proc))
+        raise
     head = _HEADER.match(out)
     if proc.returncode or not head:
         raise OSError((err.decode(errors="replace").strip().splitlines() or ["the helper's answer"])[-1][:200])
@@ -309,17 +328,21 @@ class InstanceLog:
             records = [{"t": t, "y": "log", **spans[t]} for t in sorted(touched)]
             if gap:
                 records.append({"t": int(now) // 300 * 300, "y": "gap", "why": gap})
+            # where the reading is: now when it is at the end of the log, else the time of the last line read (a
+            # catch-up of more than CATCH_UP is still in the past: its spans and its hours are not over yet)
+            reached = max(int(cursor.get("reached") or 0), counter.newest or 0)
+            upto = now if not more else reached
             # an hour is over 5 minutes after its end (a request is written when it ends): its pages written once
-            done = [h for h in hours if h + 3600 + 300 <= now]
+            done = [h for h in hours if h + 3600 + 300 <= upto]
             records += [{"t": h, "y": "pages", "p": hours.pop(h)} for h in sorted(done)]
             if records:
                 self.history.add(key, records, now)
-            spans = {t: v for t, v in spans.items() if t >= now - KEEP_OPEN}
+            spans = {t: v for t, v in spans.items() if t >= upto - KEEP_OPEN}
             state = state if state == NO_ACCESS else None
             if first:
                 state = NOT_YET
             self.reads[key] = {"at": int(now), "state": state, "more": more}
-            self.save_cursor(key, {**where, "at": int(now), "state": state,
+            self.save_cursor(key, {**where, "at": int(now), "state": state, "reached": reached,
                                    "spans": {str(t): v for t, v in spans.items()},
                                    "hours": {str(h): v for h, v in hours.items()}})
             return len(lines)
@@ -339,8 +362,8 @@ class InstanceLog:
                     _logger.exception("monitor: the causes of %s", inst.key)
             if now is None and i + 1 < len(found):
                 await asyncio.sleep(min(5.0, EVERY / max(len(found), 1) / 4))  # one queue, staggered
-        if self.told is not None and causes:
-            await self.told(causes)
+        if self.told is not None:
+            await self.told(causes, {inst.key for inst in found})
 
     # the jobs' watcher (JobManager.watchers): before a job acts on a compose instance its log is read, so a
     # container it makes again loses nothing of what the one before wrote
@@ -356,7 +379,7 @@ class InstanceLog:
             ends = time.monotonic() + BEGIN_MOST
             try:
                 while True:
-                    await asyncio.wait_for(self.read(inst), max(1.0, ends - time.monotonic()))
+                    await asyncio.wait_for(self.read(inst), min(BEGIN_READ, max(1.0, ends - time.monotonic())))
                     if not (self.reads.get(key) or {}).get("more") or time.monotonic() >= ends:
                         break
             except Exception:  # noqa: BLE001 - a read must not change the job

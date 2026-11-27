@@ -29,6 +29,7 @@ from __future__ import annotations
 import calendar
 import re
 import time
+import urllib.parse
 
 # the bounds of the 12 classes of a response's time, seconds; 1 s and 3 s are bounds: «slow» reads them exactly
 EDGES = (0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0)
@@ -61,6 +62,14 @@ _BOUNCE = re.compile(r"\ARouting mail .*\bbounce", re.I)
 _NUMBER = re.compile(r"\d+")
 _TOKEN = re.compile(r"(?=[^/]*\d)[A-Za-z0-9_-]{16,}|[0-9a-fA-F]{8,}(?:-[0-9a-fA-F]{4,}){0,4}")
 _UNSAFE = re.compile(r"[^A-Za-z0-9/._~+-]")
+_SLUG = re.compile(r"[A-Za-z0-9_.~+-]*[A-Za-z][A-Za-z0-9_.~+-]*-\d+")
+_LETTERS = re.compile(r"[A-Za-z]{16,}")
+_FIELD = re.compile(r"[a-z][a-z_]*(?:<n>)?")
+# what is no page of a person: a health check, the monitor's own check (monitor.PROBE), their WARNING too
+HEALTH = ("/web/health",)
+PROBE = "omniacli-monitor"
+# Odoo's own warning for an argument a route does not take (a health check of a balancer with its own query string)
+_IGNORED_ARGS = re.compile(r"> called ignoring args ")
 
 
 def time_class(seconds: float) -> int:
@@ -99,18 +108,39 @@ def add_classes(into: list[int], other) -> list[int]:
 
 
 def normalised(target: str) -> str:
-    """A page's path as the monitor keeps it: no query string, no #model.method, a number <n>, a token <x>, at
-    most PATH_MOST characters of a safe alphabet (a path is the customer's, not a place to carry text)."""
-    path = target.split("?", 1)[0].split("#", 1)[0]
+    """A page's path as the monitor keeps it, with no text of the customer's (a workspace's admin reads it): no
+    query string, no #model.method, %xx decoded before anything is decided; a number <n>, a token or a word of 16
+    letters or more <x>, a slug with its record (mario-rossi-23) <x>-<n>, a file's name after /web/content/<id>/
+    and /web/image/<model>/<id>/<field>/ <f>; at most PATH_MOST characters of a safe alphabet."""
+    path = urllib.parse.unquote(target.split("?", 1)[0].split("#", 1)[0], errors="replace")
     if "://" in path:
         path = "/" + path.split("://", 1)[1].partition("/")[2]
     parts = []
     for part in path.split("/"):
         part = _UNSAFE.sub("_", part)
+        if _SLUG.fullmatch(part):
+            parts.append("<x>-<n>")
+            continue
+        part = _LETTERS.sub("<x>", part)
         part = _TOKEN.sub("<x>", part)
         parts.append(_NUMBER.sub("<n>", part))
+    parts = _without_file(parts)
     found = "/".join(parts) or "/"
     return found[:PATH_MOST]
+
+
+def _without_file(parts: list[str]) -> list[str]:
+    """/web/content/…<id>/<anything> and /web/image/<model>/<id>/<field>/<anything>: the rest is a file's name."""
+    if parts[:3] == ["", "web", "content"] and "<n>" in parts[3:]:
+        cut = parts.index("<n>", 3) + 1
+        return parts[:cut] + (["<f>"] if len(parts) > cut else [])
+    if parts[:3] == ["", "web", "image"] and "<n>" in parts[3:]:
+        at = parts.index("<n>", 3) + 1
+        # its field (image_128, avatar_<n>, datas), when the part after the id is one; else the file's name
+        if len(parts) > at and _FIELD.fullmatch(parts[at]):
+            at += 1
+        return parts[:at] + (["<f>"] if len(parts) > at else [])
+    return parts
 
 
 def empty_tally() -> dict:
@@ -133,6 +163,7 @@ class Counter:
         self.spans: dict[int, dict] = {}
         # {hour: {path: [requests, total ms, most ms]}}
         self.hours: dict[int, dict] = {}
+        self.newest: int | None = None  # the time of the last record read
 
     def tally(self, start: int) -> dict:
         return self.spans.setdefault(start, empty_tally())
@@ -145,13 +176,14 @@ class Counter:
         if when is None:
             return
         level, logger, message = head.group(2), head.group(4), head.group(5)
+        self.newest = max(self.newest or when, when)
         tally = self.tally(when // self.span * self.span)
         tally["ln"] += 1
         if logger in ACCESS_LOGGERS:
             self.access(tally, when, message)
         if level in ("ERROR", "CRITICAL"):
             tally["e"] += 1
-        elif level == "WARNING" and logger not in DEPRECATION_LOGGERS:
+        elif level == "WARNING" and logger not in DEPRECATION_LOGGERS and not _IGNORED_ARGS.search(message):
             tally["w"] += 1
         if _KILLED.search(message):
             tally["k"] += 1
@@ -172,7 +204,7 @@ class Counter:
         if not found:
             return
         target, status = found.group(2), found.group(3)
-        if target.startswith(NOT_PAGES) or status == "101":
+        if target.startswith(NOT_PAGES) or status == "101" or target.split("?", 1)[0] in HEALTH or PROBE in target:
             return
         tally["rq"] += 1
         if status.isdigit() and status.startswith("5"):
