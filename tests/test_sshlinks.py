@@ -249,3 +249,54 @@ async def test_fetch_host_key_checks_only_the_address():
     with pytest.raises(sshlinks.SshError, match="no SSH server answered on 127.0.0.1:1"):
         await sshlinks.fetch_host_key("127.0.0.1", 1)
 
+
+
+@pytest.mark.skipif(not shutil.which("ssh-keygen"), reason="no ssh-keygen")
+def test_a_renamed_link_keeps_its_tunnel_and_its_pages(env, tmp_path, customer, fake_ssh):  # noqa: F811
+    """Massari_Staging (27/11/2026): a link renamed got a new ssh, and its pages said «it does not answer GET
+    /api/info» while it started, for a minute after. Its tunnel goes on under the new name: the same ssh, the
+    same port, its pages at once."""
+    _, url = customer
+    conf = tmp_path / "mine"
+    conf.mkdir()
+    (conf / "links.yaml").write_text(yaml.safe_dump({"links": {}}))
+    mine = create_app(parse_settings({
+        "auth": {"users": {"admin": USER_HASH}}, "backup_dir": str(tmp_path / "b"),
+        "jobs_dir": str(tmp_path / "j"), "servers_file": "servers.yaml"}, base_dir=conf))
+    with TestClient(mine) as c:
+        headers = browser(mine, "admin")
+        c.post("/api/links/ssh/key", headers=headers)
+        body = {"name": "cliente", "url": url, "token": LINK_TOKEN, "new": True,
+                "ssh": {**SSH, "host": "127.0.0.1", "port": 2222}}
+        assert c.post("/api/links/save", json=body, headers=headers).json() == {"ok": True}
+        tunnels = mine.state.ssh_tunnels
+        _until(lambda: (tunnels.status("cliente") or {}).get("state") == "up")
+        port, pid = tunnels.status("cliente")["port"], _calls(fake_ssh)[-1]["pid"]
+        assert c.post("/api/links/rename", headers=headers,
+                      json={"name": "cliente", "new_name": "Cliente_Nuovo"}).json() == {"ok": True, "name": "Cliente_Nuovo"}
+        assert tunnels.status("cliente") is None
+        assert tunnels.status("Cliente_Nuovo")["state"] == "up" and tunnels.status("Cliente_Nuovo")["port"] == port
+        assert _calls(fake_ssh)[-1]["pid"] == pid and _alive(pid)
+        assert mine.state.settings.link_targets["Cliente_Nuovo"].address == f"http://127.0.0.1:{port}"
+        assert c.get("/links/Cliente_Nuovo/servers/srv", headers=headers).status_code == 200
+
+
+@pytest.mark.skipif(not shutil.which("ssh-keygen"), reason="no ssh-keygen")
+def test_a_page_waits_for_a_tunnel_starting(env, tmp_path, customer, fake_ssh):  # noqa: F811
+    """A link just saved: its first page waits for its SSH tunnel to start instead of saying the machine does not
+    answer, and a tunnel starting is never remembered as a machine down."""
+    _, url = customer
+    conf = tmp_path / "mine"
+    conf.mkdir()
+    (conf / "links.yaml").write_text(yaml.safe_dump({"links": {}}))
+    mine = create_app(parse_settings({
+        "auth": {"users": {"admin": USER_HASH}}, "backup_dir": str(tmp_path / "b"),
+        "jobs_dir": str(tmp_path / "j"), "servers_file": "servers.yaml"}, base_dir=conf))
+    with TestClient(mine) as c:
+        headers = browser(mine, "admin")
+        c.post("/api/links/ssh/key", headers=headers)
+        body = {"name": "cliente", "url": url, "token": LINK_TOKEN, "new": True,
+                "ssh": {**SSH, "host": "127.0.0.1", "port": 2222}}
+        assert c.post("/api/links/save", json=body, headers=headers).json() == {"ok": True}
+        assert mine.state.ssh_tunnels.status("cliente")["state"] == "starting"
+        assert c.get("/links/cliente/", headers=headers).status_code == 200

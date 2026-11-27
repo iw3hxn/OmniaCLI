@@ -563,6 +563,8 @@ _logger = logging.getLogger(__name__)
 _ACTING = contextvars.ContextVar("omniacli_acting_source", default="")
 # an MCP call through a link: a tool may wait 600 s for its job
 LINK_MCP_TIMEOUT = 660
+# a page of a link whose SSH tunnel is starting waits for it this long, in seconds, before it says the machine is down
+TUNNEL_WAIT = 8
 # the day the automatic backups' Try a restore runs (6: Sunday)
 VERIFY_WEEKDAY = 6
 
@@ -12669,6 +12671,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
                 await tunnels.close(found.id, f"{name} renamed {new_name}")
             links = {(new_name if k == name else k): (renamed if k == name else v)
                      for k, v in settings.link_targets.items()}
+            # its SSH tunnel goes on under the new name: no page of it fails while a new ssh starts
+            ssh_tunnels.rename(name, new_name)
             failed = await store_links(links)
             if failed:
                 return failed
@@ -13085,6 +13089,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         if known and "agent_api" in known and now - known.get("at", float("-inf")) < every:
             return known
         found = await probe_link(link, me.name, me.role)
+        if not found["ok"] and found.get("tunnel") == "starting":
+            # its SSH tunnel is starting (a link just saved, OmniaCLI just started): waited a little, never
+            # remembered as a machine that does not answer
+            for _ in range(int(TUNNEL_WAIT / 0.25)):
+                await asyncio.sleep(0.25)
+                if (ssh_tunnels.status(link.name) or {}).get("state") != "starting":
+                    break
+            found = await probe_link(link, me.name, me.role)
+            if not found["ok"] and found.get("tunnel") == "starting":
+                return None
         if not found["ok"]:
             agents.setdefault(link.name, {})["failed_at"] = now
             return None

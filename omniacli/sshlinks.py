@@ -331,6 +331,12 @@ class SshTunnels:
             tunnel.link = link
             link.local_port = tunnel.port
 
+    def rename(self, name: str, new_name: str) -> None:
+        """A link renamed: its tunnel, up or not, goes on under the new name (the same ssh, the same port), so its
+        pages answer at once instead of waiting for a new ssh (Massari_Staging, 27/11/2026). Before sync."""
+        if name in self.tunnels and new_name not in self.tunnels:
+            self.tunnels[new_name] = self.tunnels.pop(name)
+
     def status(self, name: str) -> dict | None:
         tunnel = self.tunnels.get(name)
         if tunnel is None:
