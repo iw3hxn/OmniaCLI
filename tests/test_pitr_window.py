@@ -338,8 +338,9 @@ async def test_the_page_the_rest_api_and_mcp(workspaces, client, env, monkeypatc
     error_of(await client.post(f"{V1}/instances/acme-odoo/production/pitr/enable", headers=dev, json={"confirm": "acme-odoo"}),
              403, "production_level_required")
     resp = await client.post(f"{V1}/instances/acme-odoo/production/pitr/enable", headers=admin, json={"confirm": "acme-odoo"})
-    assert resp.status_code == 202 and helper[-1][0] == "pitr-enable"
-    assert (await wait_job(client, resp.json()["job"]["id"]))["status"] == "success"
+    assert resp.status_code == 202
+    # the job's helper is asked once it runs: the log of a compose instance is read first (AD-019 slice 2)
+    assert (await wait_job(client, resp.json()["job"]["id"]))["status"] == "success" and helper[-1][0] == "pitr-enable"
     assert (await client.get(f"{V1}/instances/acme-odoo/production/pitr", headers=dev)).json()["days"] == 7
     error_of(await client.post(f"{V1}/instances/acme-odoo/production/pitr/settings", headers=admin, json={"days": 40}), 400,
              "refused")
