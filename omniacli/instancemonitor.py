@@ -41,6 +41,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import odoolog
 from .metrics import INTERVAL
 
 _logger = logging.getLogger(__name__)
@@ -62,6 +63,17 @@ DB_CONNECTIONS = 0.8
 DB_CACHE = 95
 # a source not measured yet: what its tile says instead of a number
 FROM_LOG = "from_log"
+# the log's causes (UX-018 §3, Carlo's D-N1 of 26/11/2026): slow when half the requests are over 1 s or 1 in 20 over
+# 3 s, failing over 1% of them, in the last 15 minutes; fixed, not in Options
+SLOW_HALF = 1.0
+SLOW_ONE_IN_20 = 3.0
+FAILED_PERCENT = 1.0
+# fewer requests than these in the 15 minutes say nothing of the many (1 in 20 needs 20)
+MIN_REQUESTS = 20
+LOG_FRESH = 11 * 60  # a read of the log older than this is not «now» (the log is read every 5 minutes)
+SLOWEST = 10  # the pages of the period shown
+# why there are no requests to show: a sentence each on the page, never a 0 (UX-018 §6.2)
+NO_SOURCE = ("no_file", "no_access", "unreadable")
 
 _SEGMENT = re.compile(r"[A-Za-z0-9._-]+")
 _WRITING = threading.Lock()
@@ -140,7 +152,9 @@ class InstanceHistory:
             return []
 
     @staticmethod
-    def _read(path: Path, since: float, found: dict[int, dict]) -> None:
+    def _read(path: Path, since: float, found: dict[int, dict], kind: str | None = None) -> None:
+        """The records of path from since of kind (None: the load's 5-minute points; "log": the counts of Odoo's
+        log; "pages": the pages of an hour; "gap": a gap in the log), by their time."""
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
@@ -150,17 +164,39 @@ class InstanceHistory:
                 point = json.loads(line)
             except ValueError:
                 continue  # a line cut by a stop: the next one is whole
-            if isinstance(point, dict) and isinstance(point.get("t"), int) and point["t"] >= since:
+            if isinstance(point, dict) and isinstance(point.get("t"), int) and point["t"] >= since \
+                    and point.get("y") == kind:
                 found[point["t"]] = point
 
-    def points(self, key: str, since: float = 0) -> list[dict]:
-        """The points after since, oldest first; for the same time the last line wins."""
+    def points(self, key: str, since: float = 0, kind: str | None = None) -> list[dict]:
+        """The records of kind after since, oldest first; for the same kind and time the last line wins."""
         day = time.strftime("%Y-%m-%d", time.gmtime(max(since, 0)))
         found: dict[int, dict] = {}
         for path in self._files(key):
             if path.stem >= day:
-                self._read(path, since, found)
+                self._read(path, since, found, kind)
         return [found[t] for t in sorted(found)]
+
+    def kinds(self, key: str, since: float, kinds: tuple) -> dict[str | None, list[dict]]:
+        """points() of several kinds, each file read once."""
+        day = time.strftime("%Y-%m-%d", time.gmtime(max(since, 0)))
+        found: dict = {kind: {} for kind in kinds}
+        for path in self._files(key):
+            if path.stem < day:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                try:
+                    point = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(point, dict) and isinstance(point.get("t"), int) and point["t"] >= since \
+                        and point.get("y") in found:
+                    found[point.get("y")][point["t"]] = point
+        return {kind: [v[t] for t in sorted(v)] for kind, v in found.items()}
 
     def last(self, key: str) -> int | None:
         """The start of the last span written."""
@@ -203,7 +239,10 @@ class InstanceHistory:
                 fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
                 with os.fdopen(fd, "a", encoding="utf-8") as out:
                     out.write(("\n" if cut else "") + "".join(json.dumps(p, separators=(",", ":")) + "\n" for p in found))
-            self._last[key] = max(self.last(key) or 0, *(p["t"] for p in points))
+            # the last span of the load written (the log's records are of their own kind: they never say it)
+            load = [p["t"] for p in points if p.get("y") is None]
+            if load:
+                self._last[key] = max(self.last(key) or 0, *load)
             self.prune(key, now)
 
     def prune(self, key: str, now: float | None = None) -> None:
@@ -367,7 +406,7 @@ def _sum(*values):
 
 def verdict(state: dict, live: list[dict], *, cores: float, memory_limit: float | None, workers: int | None,
             thresholds: dict, minutes: int, database: list[dict], workspace: list[dict] | None = None,
-            has_history: bool = False, now: float | None = None) -> dict:
+            has_history: bool = False, log: list[dict] | None = None, now: float | None = None) -> dict:
     """The verdict on now: stopped, down, none (not measured yet), look
     (with its causes) or good. state: the monitor's view of the instance
     (state, since); live: the sampler's points of its last hour; cores and
@@ -405,10 +444,138 @@ def verdict(state: dict, live: list[dict], *, cores: float, memory_limit: float 
         busy = _window(live, lambda p: p.get("conns"), seconds, now)
         if busy and min(busy) >= workers:
             causes.append({"kind": "workers", "workers": workers, "minutes": minutes, "section": "load"})
+    causes += log or []
     causes += [{**c, "section": "database"} for c in database]
     # checked: the monitor asks it for its login page (up); an instance it never asks (no web port) is not said to
     # answer
     return {"state": "look" if causes else "good", "since": None, "causes": causes, "checked": said == "up"}
+
+
+def _log_window(log: list[dict], read_at: float | None, now: float) -> list[dict]:
+    """The log's spans of the last 15 minutes read: the last read's span and the two before (the log is read every
+    5 minutes: its last 15 minutes are its last three spans); none when the last read is older than LOG_FRESH."""
+    if not read_at or now - read_at > LOG_FRESH:
+        return []
+    last = int(read_at) // BUCKET * BUCKET
+    return [p for p in log if last - 2 * BUCKET <= p["t"] <= last]
+
+
+def _total(points: list[dict]) -> dict:
+    found = odoolog.empty_tally()
+    found.pop("pages")
+    for p in points:
+        found = odoolog.merge(found, p)
+    return found
+
+
+def log_causes(log: list[dict], read_at: float | None, now: float) -> list[dict]:
+    """The causes of now read in Odoo's log: slow, errors, workers stopped for memory."""
+    window = _log_window(log, read_at, now)
+    if not window:
+        return []
+    total = _total(window)
+    causes = []
+    timed, classes = total["tm"], total["h"]
+    if timed >= MIN_REQUESTS and (odoolog.over(classes, SLOW_HALF) * 2 >= timed
+                                  or odoolog.over(classes, SLOW_ONE_IN_20) * 20 >= timed):
+        causes.append({"kind": "slow", "median": odoolog.quantile(classes, 0.5), "p95": odoolog.quantile(classes, 0.95),
+                       "requests": total["rq"], "half": SLOW_HALF, "one_in_20": SLOW_ONE_IN_20, "minutes": 15,
+                       "section": "requests"})
+    if total["rq"] >= MIN_REQUESTS and total["rf"] * 100 > FAILED_PERCENT * total["rq"]:
+        causes.append({"kind": "errors", "percent": round(100.0 * total["rf"] / total["rq"], 1), "failed": total["rf"],
+                       "requests": total["rq"], "threshold": FAILED_PERCENT, "minutes": 15, "section": "requests"})
+    if total["k"]:
+        causes.append({"kind": "killed", "count": total["k"], "at": sorted(total["kt"])[:5], "minutes": 15,
+                       "section": "load"})
+    return causes
+
+
+def _log_series(points: list[dict], since: float, seconds: int) -> list[dict]:
+    """The requests' points of the period, summed by span past MAX_POINTS: {t, ok, failed, minutes, median, p95}."""
+    width = BUCKET
+    if len(points) > MAX_POINTS:
+        width = -(-max(-(-int(seconds) // MAX_POINTS), BUCKET) // BUCKET) * BUCKET
+    groups: dict[int, list[dict]] = {}
+    for p in points:
+        start = p["t"] if width == BUCKET else int(since) + min((p["t"] - int(since)) // width, MAX_POINTS - 1) * width
+        groups.setdefault(start, []).append(p)
+    found = []
+    for start in sorted(groups):
+        total = _total(groups[start])
+        found.append({"t": start, "ok": total["rq"] - total["rf"], "failed": total["rf"], "minutes": width // 60,
+                      "median": odoolog.quantile(total["h"], 0.5), "p95": odoolog.quantile(total["h"], 0.95)})
+    return found
+
+
+def slowest(pages: list[dict], open_hours: dict, since: float, most: int = SLOWEST) -> list[dict]:
+    """The slowest pages of the period on average: {path, count, mean (s), max (s)}, from the pages kept of each
+    hour and those of the hour in course."""
+    merged: dict = {}
+    for record in pages:
+        if record["t"] + 3600 > since:
+            merged = odoolog.merge_pages(merged, record.get("p") or {})
+    for hour, found in (open_hours or {}).items():
+        if int(hour) + 3600 > since:
+            merged = odoolog.merge_pages(merged, found)
+    ranked = odoolog.worst(merged, most)
+    return [{"path": path, "count": count, "mean": round(total / count / 1000, 2) if count else None,
+             "max": round(top / 1000, 2)} for path, (count, total, top) in ranked.items()]
+
+
+LOG_ROWS = (("errors", "e"), ("warnings", "w"), ("killed", "k"), ("db_memory", "dbo"), ("retried", "s"),
+            ("api", "a"), ("mail_sent", "ms"), ("mail_bounced", "mb"))
+
+
+def log_counts(log: list[dict], now: float, api_row: bool, state: str | None) -> dict:
+    """The log's counts of the 24 hours and of the 7 days (UX-018 §5, «Il log di Odoo»): the API calls only for the
+    machine's admins and the developers; none (the reason instead) when the log is not read."""
+    if state in ("no_file", "unreadable", "not_yet"):
+        return {"source": state}
+    found = {"source": None}
+    for name, seconds in (("day", 86400), ("week", 7 * 86400)):
+        total = _total([p for p in log if p["t"] >= now - seconds])
+        found[name] = {row: total[key] for row, key in LOG_ROWS if row != "api" or api_row}
+    first = min((p["t"] for p in log), default=None)
+    found["since"] = first if first is not None and first > now - 7 * 86400 + BUCKET else None
+    return found
+
+
+def requests_view(log: list[dict], pages: list[dict], gaps: list[dict], open_hours: dict, period: str,
+                  read: dict | None, answered: int, now: float, can_act: bool) -> dict:
+    """The requests of the period from Odoo's log: totals, the chart's points, the slowest pages (who acts only)
+    and source, why there are none: None, no_file, no_access, unreadable, not_yet, none (no request)."""
+    seconds = PERIODS[period]
+    since = now - seconds
+    found = [p for p in log if p["t"] >= since]
+    total = _total(found)
+    state = (read or {}).get("state")
+    if state is None and found and not total["rq"] and answered:
+        # lines read, the monitor's own checks answered, and no access line: its log level writes none
+        state = "no_access"
+    if state is None and not total["rq"]:
+        state = "none"
+    shown = state not in NO_SOURCE
+    return {"source": state, "read_at": (read or {}).get("at"),
+            "total": total["rq"] if shown else None, "failed": total["rf"] if shown else None, "timed": total["tm"],
+            "median": odoolog.quantile(total["h"], 0.5), "p95": odoolog.quantile(total["h"], 0.95),
+            "points": _log_series(found, since, seconds) if shown else [],
+            "gaps": [{"t": g["t"], "why": g.get("why")} for g in gaps if g["t"] >= since],
+            **({"pages": slowest(pages, open_hours, since) if shown else []} if can_act else {})}
+
+
+def request_tiles(requests: dict) -> dict:
+    """The tiles «Tempo di risposta» and «Richieste non riuscite» of the period; None with the reason when there
+    is nothing to tell (never 0)."""
+    state = requests["source"]
+    if state in (*NO_SOURCE, "not_yet") or not requests["total"]:
+        reason = state or "none"
+        return {"response": {"value": None, "reason": reason}, "failed": {"value": None, "reason": reason}}
+    return {
+        "response": {"value": requests["median"], "p95": requests["p95"], "requests": requests["timed"],
+                     "reason": None if requests["timed"] else "untimed"},
+        "failed": {"value": round(100.0 * requests["failed"] / requests["total"], 1), "count": requests["failed"],
+                   "requests": requests["total"], "reason": None},
+    }
 
 
 def _shrink(points: list[dict], width: int, keys_mean: tuple, keys_max: tuple, origin: int = 0) -> list[dict]:
@@ -555,25 +722,43 @@ def past(state_checks: list, history: list[dict], period: str, now: float) -> li
     return [{"kind": "down", "minutes": sum(p["ck"] - (p.get("up") or 0) for p in found), "at": found[0]["t"]}]
 
 
+def past_log(log: list[dict], period: str, now: float) -> list[dict]:
+    """The workers stopped for memory in the period, the first one's time."""
+    found = [p for p in log if p["t"] >= now - PERIODS[period] and p.get("k")]
+    if not found:
+        return []
+    times = sorted(t for p in found for t in (p.get("kt") or [p["t"]]))
+    return [{"kind": "killed", "count": sum(p["k"] for p in found), "at": times[0], "section": "log"}]
+
+
 def build(instance, period: str, *, sampler, history: InstanceHistory, state: dict, checks: list,
           thresholds: dict, minutes: int, cores: float, memory_limit: float | None, workers: int | None,
           database: list[dict], where: str, host: str | None, workspace: list[dict] | None, customer: bool,
+          log_read: dict | None = None, open_hours: dict | None = None, can_act: bool = True, api_row: bool = True,
           now: float | None = None) -> dict:
     """What the page, the REST API and MCP answer of an instance's monitor
     over a period. customer: a workspace's people, who never read the
-    machine's PostgreSQL shared by every database, nor a host."""
+    machine's PostgreSQL shared by every database, nor a host. log_read: the
+    last read of its log (instancelog.InstanceLog.read_state), open_hours:
+    the pages of the hour in course; can_act: who reads the slowest pages
+    and the log's counts (not a workspace's user); api_row: who reads the API
+    calls (the machine's admins and the developers)."""
     now = now if now is not None else time.time()
     if period not in PERIODS:
         raise ValueError(f"the period is one of {', '.join(PERIODS)}")
     key = instance.key
     since = now - PERIODS[period]
-    kept = history.points(key, since)
+    found_kinds = history.kinds(key, min(since, now - 7 * 86400), (None, "log", "pages", "gap"))
+    kept = [p for p in found_kinds[None] if p["t"] >= since]
+    log = found_kinds["log"]
     started = history.started(key)
     live = list(sampler.history.get(key, ()))
     if live and (started is None or live[0]["t"] < started):
         started = live[0]["t"]
+    read = log_read or {}
     found = verdict(state, live, cores=cores, memory_limit=memory_limit, workers=workers, thresholds=thresholds,
-                    minutes=minutes, database=database, workspace=workspace, has_history=bool(kept), now=now)
+                    minutes=minutes, database=database, workspace=workspace, has_history=bool(kept),
+                    log=log_causes(log, read.get("at"), now), now=now)
     points, interval = series(kept, live, list(sampler.machine), period, cores, sampler.cores, now)
     shared = where == "cluster"
     if customer or not shared:
@@ -587,17 +772,27 @@ def build(instance, period: str, *, sampler, history: InstanceHistory, state: di
     database_place = {"where": where}
     if where == "remote" and host and not customer:
         database_place["host"] = host
-    return {
+    answered = sum(1 for c in counted(checks) if c[0] >= since and c[1]) + sum(p.get("up") or 0 for p in kept)
+    requests = requests_view(log, found_kinds["pages"], found_kinds["gap"], open_hours or {}, period, read, answered,
+                             now, can_act)
+    shown_tiles = tiles(checks, kept, period, points, memory_limit, now)
+    shown_tiles.update(request_tiles(requests))
+    quiet = found["state"] in ("down", "stopped", "none")
+    answer = {
         "instance": key, "period": period, "periods": list(PERIODS), "now": int(now), "interval": interval,
         "since": started, "measured_from": started if started and started > since else None,
-        "verdict": found, "past": past(checks, kept, period, now) if found["state"] not in ("down", "stopped", "none") else [],
-        "tiles": tiles(checks, kept, period, points, memory_limit, now),
+        "verdict": found, "past": [] if quiet else past(checks, kept, period, now) + past_log(log, period, now),
+        "tiles": shown_tiles,
+        "requests": requests,
         "load": {"points": points, "cores": cores, "memory_limit": memory_limit,
                  "cpu_threshold": thresholds["cpu"][0], "memory_threshold": thresholds["ram"][0],
                  "workers": workers, "database": database_place,
                  # the series of the machine's PostgreSQL, every database together: its admins only
                  "cluster": shared and not customer},
     }
+    if can_act:
+        answer["log"] = log_counts(log, now, api_row, read.get("state"))
+    return answer
 
 
 def workers_of(instance, role_state=None) -> int | None:

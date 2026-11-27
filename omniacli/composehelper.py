@@ -37,6 +37,17 @@ command of the caller's, and runs docker with an environment of its own:
          [--until <time>] [--first|--last <N>]  (to a UTC time; only the first or
                                          the last N of them, counted),
                                          each with its time
+    log-read <service> <container|-> <inode> <offset>
+                                         the bytes of the service's log
+                                         (Docker's json-file of its
+                                         container) after offset, at most
+                                         LOG_READ_MOST, after a first line
+                                         #omniacli-log container=… inode=…
+                                         pos=… gap=… more=…: a file rotated
+                                         is finished first (its old inode),
+                                         a new container read from its
+                                         start; never a path from the
+                                         caller, never its text read
     port <service> <port>                where the machine publishes the port
     version <odoo service>               odoo --version
     dump <odoo service> <db> [--no-filestore]
@@ -356,7 +367,7 @@ MODULES_INFO_QUERY = (
     "'author', m.author, 'license', m.license, 'depends', coalesce((SELECT json_agg(d.name ORDER BY d.name) "
     "FROM ir_module_module_dependency d WHERE d.module_id = m.id), '[]'::json)) "
     "FROM ir_module_module m ORDER BY m.name")
-WITH_ARGUMENTS = ("logs", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
+WITH_ARGUMENTS = ("logs", "log-read", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
                   "setup", "options", "image", "verify", "pip-freeze",
                   "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
@@ -1099,6 +1110,109 @@ def logs_cut(project: Path, cmd: list[str], cut: tuple[str, int]) -> int:
     return 0 if total == "more" else code
 
 
+# log-read: the monitor of an instance reads its Odoo's log by offset and inode (AD-019 19.2): Docker's json-file
+# of the service's container, found by its compose labels; a rotated file (renamed .1, .2…) finished first; at most
+# LOG_READ_MOST bytes a call, cut after the last whole line. The bytes only: the caller counts what is in them
+LOG_READ_MOST = 4 * 1024 * 1024
+LOG_ROTATED_MOST = 20  # the rotated files looked at for the old inode
+CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
+SERVICE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,62}")
+LOG_READ_USAGE = "usage: log-read <service> <container id|-> <inode> <offset>"
+
+
+def _docker(*args: str) -> subprocess.CompletedProcess:
+    docker = shutil.which("docker", path=ENV["PATH"])
+    if docker is None:
+        raise HelperError("docker is not installed")
+    return subprocess.run([docker, *args], env=ENV, capture_output=True, text=True, timeout=60)
+
+
+def log_container(project: Path, name: str) -> tuple[str, Path] | None:
+    """(id, the json-file) of the service's container: the running one, else the last started; None: none."""
+    found = _docker("ps", "-a", "-q", "--no-trunc", "--filter", f"label=com.docker.compose.project.working_dir={project}",
+                    "--filter", f"label=com.docker.compose.service={name}")
+    ids = [i for i in found.stdout.split() if CONTAINER_ID.fullmatch(i)]
+    if found.returncode or not ids:
+        return None
+    seen = _docker("inspect", "--format", "{{.Id}}|{{.State.Running}}|{{.State.StartedAt}}|{{.LogPath}}", *ids)
+    rows = [line.split("|", 3) for line in seen.stdout.splitlines() if line.count("|") >= 3]
+    rows = [r for r in rows if CONTAINER_ID.fullmatch(r[0]) and r[3].startswith("/")]
+    if not rows:
+        return None
+    best = max(rows, key=lambda r: (r[1] == "true", r[2]))
+    return best[0], Path(best[3])
+
+
+def _read_from(path: Path, offset: int, most: int) -> tuple[bytes, int, int]:
+    """(the whole lines after offset, at most most bytes, where they end, the file's size)."""
+    with open(path, "rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        fh.seek(offset)
+        data = fh.read(max(0, min(size - offset, most)))
+    cut = data.rfind(b"\n") + 1
+    return data[:cut], offset + cut, size
+
+
+def log_read(project: Path, args: list[str], out=None) -> int:
+    """log-read <service> <container|-> <inode> <offset>: see the module's doc."""
+    out = out or sys.stdout.buffer
+    if len(args) != 4 or not SERVICE_NAME.fullmatch(args[0]) or not (args[1] == "-" or CONTAINER_ID.fullmatch(args[1])) \
+            or not args[2].isdigit() or not args[3].isdigit() or len(args[2]) > 20 or len(args[3]) > 20:
+        raise HelperError(LOG_READ_USAGE)
+    name, had, inode, offset = args[0], args[1], int(args[2]), int(args[3])
+    found = log_container(project, name)
+    if found is None:
+        out.write(b"#omniacli-log container=- inode=0 pos=0 gap=no-container more=0\n")
+        return 0
+    container, path = found
+    try:
+        current = os.stat(path)
+    except OSError:
+        out.write(f"#omniacli-log container={container} inode=0 pos=0 gap=no-file more=0\n".encode())
+        return 0
+    if had == "-" or inode == 0:
+        # a first read: from now on
+        out.write(f"#omniacli-log container={container} inode={current.st_ino} pos={current.st_size} gap=- "
+                  f"more=0\n".encode())
+        return 0
+    parts, gap, budget = [], "-", LOG_READ_MOST
+    if had != container:
+        gap, offset = "recreated", 0  # the container of before went with its log: what it wrote last is lost
+    elif current.st_ino != inode:
+        old = None
+        for n in range(1, LOG_ROTATED_MOST + 1):
+            candidate = path.with_name(f"{path.name}.{n}")
+            try:
+                if os.stat(candidate).st_ino == inode:
+                    old = candidate
+                    break
+            except OSError:
+                continue
+        if old is not None:
+            data, end, size = _read_from(old, offset, budget)
+            parts.append(data)
+            budget -= len(data)
+            if end < size:
+                # the old file is not finished: the next call goes on in it
+                out.write(f"#omniacli-log container={container} inode={inode} pos={end} gap=- more=1\n".encode())
+                out.write(data)
+                return 0
+        else:
+            compressed = any(path.with_name(f"{path.name}.{n}.gz").exists() for n in range(1, LOG_ROTATED_MOST + 1))
+            gap = "compressed" if compressed else "rotated"
+        offset = 0
+    elif offset > current.st_size:
+        gap, offset = "truncated", 0
+    data, end, size = _read_from(path, offset, budget)
+    parts.append(data)
+    out.write(f"#omniacli-log container={container} inode={current.st_ino} pos={end} gap={gap} "
+              f"more={int(end < size)}\n".encode())
+    for part in parts:
+        out.write(part)
+    out.flush()
+    return 0
+
+
 def data_folder(project: Path, service_name: str) -> Path:
     """The folder of this machine bind mounted on Odoo's data folder."""
     done = subprocess.run(compose(project, "config", "--format", "json"), env=ENV, cwd=project,
@@ -1686,6 +1800,8 @@ def run(argv: list[str]) -> int:
             raise HelperError("mail-send takes no arguments: the message, JSON, on the input")
         cmd, message = mail_send(project, sys.stdin.buffer.read(MAIL_INPUT + 1))
         return subprocess.run(compose(project, *cmd), env=ENV, cwd=project, input=message).returncode
+    if action == "log-read":
+        return log_read(project, args)
     if action == "logs":
         name, options, cut = logs_options(project, args)
         if cut:

@@ -3515,19 +3515,39 @@ history keeps the live hour and says so.
 AD-019, UX-018): a verdict on the last minutes, said in words (*Is well*; *To
 look at* with one line a cause: the memory or the processor above the
 warnings of Options › Monitoring for its minutes in a row, against what its
-workspace is granted; every worker busy; the database's own thresholds; *Does
+workspace is granted; every worker busy; the database's own thresholds; slow,
+when half the requests take over 1 s or 1 in 20 over 3 s in the last 15
+minutes; over 1% of the requests failed; workers stopped for memory; *Does
 not answer*; *Stopped*; *No measure yet*), then **1 hour · 24 hours · 7 days ·
 14 days** (24 hours by default, kept for the browser's session): four tiles
-(the share of the monitor's checks answered, the response time and the failed
-requests, read from Odoo's log in a next release and «—» until then, the
-memory at most against what is granted) and the sections closed, opened by
-the cause that names them: **Load** (the processor and the memory of Odoo and
-of its own database apart; on the machine's shared PostgreSQL its admins see
-every database together, a workspace's people a line that says it is shared)
-and **Database** (below). Every 5 minutes each production's and staging's
-point is written in `monitor/<server>/<role>/`, a file a day of JSON lines
-only added to (700/600), kept 14 days and at most 5 MB an instance; a time
-OmniaCLI was not running is a gap, never a zero. The same answer at
+(the share of the monitor's checks answered, the response time — half the
+pages and «1 in 20» — and the failed requests, the memory at most against what
+is granted) and the sections closed, opened by the cause that names them:
+**Load** (the processor and the memory of Odoo and of its own database apart;
+on the machine's shared PostgreSQL its admins see every database together, a
+workspace's people a line that says it is shared), **Requests** (a minute,
+succeeded and failed; the response time; the 10 slowest pages for who acts,
+their paths without query string, numbers as `<n>`), **Database** (below) and
+**The log of Odoo** (errors, warnings, workers stopped for memory, database
+stopped for memory, conflicts retried, and the API calls for the machine's
+admins and the developers, over 24 hours and 7 days; each number opens the
+Log tab on those records). The requests and the counts come from Odoo's own
+log, read in its tail every 5 minutes, one instance after the other: a venv's
+`log_file` by OmniaCLI, a compose project's Docker json-file by the helper's
+`log-read` (by offset and inode, never `docker logs --since`); a rotated file
+is finished from its old inode first, a compressed one is a gap said on the
+page; after a stop at most 20 MB are caught up a round; a job on a compose
+instance reads its log first, so a container it makes again loses nothing. An
+instance whose Odoo writes no log file, or whose log level writes no access
+line, says so instead of a zero. Slow, failing and workers stopped for memory
+are emailed at once to Options › Monitoring and the workspace's notices, one
+message per cause listing every instance in it (twelve slow productions are one
+email), not again while they last (event `instances.cause` for the webhooks).
+Every 5 minutes each production's and staging's point is written in
+`monitor/<server>/<role>/`, a file a day of JSON lines only added to (700/600),
+the log's counts and an hour's 50 slowest pages beside the load, kept 14 days
+and at most 5 MB an instance; a time OmniaCLI was not running is a gap, never
+a zero. The same answer at
 `GET /api/v1/instances/{server}/{role}/monitor?period=24h` and in the MCP tool
 `instance_monitor`; a workspace's people never read the machine's PostgreSQL
 nor a host. A linked machine of an older release, drawn by the central panel,
@@ -6041,7 +6061,7 @@ provides: OmniaCLI installed by hand on Python 3.9 runs without it.
 | `verify_backup` | a backup checked (SHA-256) and restored for a try in a database of its own, dropped after |
 | `full_archive` | the full archive of an instance in its backups (a production's: admin token) |
 | `database_report` | (developer token) the health of an instance's database, as Monitoring › Database shows it |
-| `instance_monitor` | whether an instance is well now (its verdict and causes), its tiles and its load over 1h, 24h, 7d or 14d, as Monitoring shows it |
+| `instance_monitor` | whether an instance is well now (its verdict and causes), its tiles, its load, its requests and the counts of its log over 1h, 24h, 7d or 14d, as Monitoring shows it |
 | `stop_job` | stops a running job |
 | `list_links`, `linked_tools`, `call_linked` | (a machine's token) the OmniaCLI this one is linked to, and their tools called through the link: one MCP for every machine |
 | `backup_test` | a backup (database and filestore) of the **test** instance; `options: {"no_filestore": true}` for the database only, `{"no_binaries": true}` with the binary columns emptied (those ticked in the instance's last Backup dialog, or `"binary_columns": ["table.column", ...]`) |

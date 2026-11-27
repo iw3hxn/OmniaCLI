@@ -165,7 +165,7 @@ from .logtail import read_since
 from .metrics import Sampler
 from . import metricshistory
 from .metricshistory import MetricsHistory, MetricsRecorder
-from . import instancemonitor
+from . import instancelog, instancemonitor
 from .scheduler import AutoUpdater
 from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore, device
 from .sessions import _digest as _digest_session, sid
@@ -768,6 +768,16 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     instance_recorder = instancemonitor.InstanceRecorder(
         sampler, instance_history, checks=lambda key: (monitor.instances.get(key) or {}).get("checks") or [],
         measured=lambda key: key.endswith("/production"))
+    # their Odoo's log read in its tail every 5 minutes (AD-019 slice 2), one after the other; before a job on a
+    # compose instance its log is read (a container made again starts a new one); the causes it finds (slow,
+    # errors, workers stopped for memory) told by the monitor, grouped by cause (defined further down)
+    instance_log = instancelog.InstanceLog(settings, instance_history, measured=lambda key: key.endswith("/production"),
+                                           role_state=workspacehelper.role_state,
+                                           told=lambda found: monitor.instance_causes(found))
+    instance_log.causes = lambda key, now=None: instancemonitor.log_causes(
+        instance_history.points(key, (now or time.time()) - 1800, "log"), instance_log.read_state(key).get("at"),
+        now or time.time())
+    jobs.watchers.append(instance_log)
     link_clients = LinkClients(link_transport)
     # the links through SSH: their ssh -L, and OmniaCLI's key, next to the links file
     ssh_tunnels = sshlinks.SshTunnels((settings.links_file or settings.servers_file).parent / "ssh")
@@ -1753,6 +1763,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         disk_recorder.start()
         load_recorder.start()
         instance_recorder.start()
+        instance_log.start()
         tunnels.start()
         ssh_tunnels.sync(settings.link_targets)
         pullers.start()
@@ -1771,7 +1782,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         for what, stop in (("consumers", consumers.stop), ("publications", publications.stop),
                            ("pullers", pullers.stop), ("tunnels", tunnels.stop), ("ssh tunnels", ssh_tunnels.close),
                            ("disk history", disk_recorder.stop), ("load history", load_recorder.stop),
-                           ("instances' history", instance_recorder.stop), ("load sampler", sampler.stop),
+                           ("instances' history", instance_recorder.stop), ("instances' logs", instance_log.stop), ("load sampler", sampler.stop),
                            ("monitor", monitor.stop), ("point-in-time recovery", stop_pitr),
                            ("planned database restarts", stop_postgres),
                            ("the look at the read replicas", lambda: stop_replicas()),
@@ -1806,6 +1817,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.disk_history, app.state.disk_recorder = disk_history, disk_recorder
     app.state.load_history, app.state.load_recorder = load_history, load_recorder
     app.state.instance_history, app.state.instance_recorder = instance_history, instance_recorder
+    app.state.instance_log = instance_log
     app.state.access_log = access_log
     app.state.tunnels = tunnels
     app.state.ssh_tunnels = ssh_tunnels
@@ -3943,9 +3955,11 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         kind = instancemonitor.where_kind(instance, place)
         return kind, (place or {}).get("host") if kind == "remote" else None
 
-    async def instance_monitor_view(instance: Instance, period: str, customer: bool) -> dict:
+    async def instance_monitor_view(instance: Instance, period: str, customer: bool, can_act: bool = True,
+                                    api_row: bool = True) -> dict:
         """The monitor of an instance over a period (instancemonitor.build); customer: a workspace's people
-        (no shared PostgreSQL, no host)."""
+        (no shared PostgreSQL, no host); can_act: who reads the slowest pages and the log's counts (not a
+        workspace's user, UX-018 §6.1); api_row: who reads the API calls (the machine's admins, the developers)."""
         state = monitor.view(instance.key)
         ws_name = settings.workspace_of(instance.server)
         ws = settings.workspaces.get(ws_name) if ws_name else None
@@ -3959,7 +3973,14 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             thresholds=settings.options.monitor_thresholds, minutes=settings.options.monitor_minutes,
             cores=limits.get("cpus") or sampler.cores, memory_limit=round(memory * 1024) if memory else None,
             workers=monitor_workers(instance), database=database, where=where, host=host,
-            workspace=list(sampler.workspaces.get(ws_name, ())) if ws_name else None, customer=customer)
+            workspace=list(sampler.workspaces.get(ws_name, ())) if ws_name else None, customer=customer,
+            log_read=instance_log.read_state(instance.key), open_hours=instance_log.open_spans(instance.key)["hours"],
+            can_act=can_act, api_row=api_row)
+
+    def monitor_audience(me: Principal) -> dict:
+        """What a person or a token reads of the monitor (UX-018 §6.1): the slowest pages and the log from the
+        developer up; the API calls the machine's admins and the developers."""
+        return {"can_act": me.can("developer"), "api_row": me.role == "developer" or machine_admin(me)}
 
     @app.get("/api/servers/{server}/{role}/monitor")
     async def instance_monitor(request: Request, server: str, role: str,
@@ -3970,7 +3991,8 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         instance = get_instance(server, role)
         if period not in instancemonitor.PERIODS:
             return refuse(f"The period is one of {', '.join(instancemonitor.PERIODS)}")
-        return await instance_monitor_view(instance, period, customer_view(request) is not None)
+        return await instance_monitor_view(instance, period, customer_view(request) is not None,
+                                           **monitor_audience(request.state.user))
 
     @app.post("/api/workspaces/{workspace}/notify", dependencies=[Depends(admin)])
     async def workspace_notify(workspace: str, payload: dict = Body(...)):
@@ -33603,12 +33625,18 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
 
     @api_router.get(P + "/instances/{server}/{role}/monitor", summary="Read the monitor of an instance",
                     description="Whether it is well now (verdict: good, look with its causes, down, stopped, none), "
-                                "the four tiles over the period (answered: percent of the monitor's checks; the "
-                                "response time and the failed requests: null with their reason until they are read "
-                                "from Odoo's log; memory: its maximum against what is granted) and its load "
-                                "(load.points: Odoo and its own database apart, CPU in percent of the cores granted, "
-                                "memory in MiB). period: 1h, 24h (the default), 7d or 14d. A workspace's token never "
-                                "reads the machine's PostgreSQL shared by every database nor a host.")
+                                "the four tiles over the period (answered: percent of the monitor's checks; response: "
+                                "the median and p95 in seconds and failed: percent of 5xx, both read from Odoo's log "
+                                "every 5 minutes, null with their reason when it gives none; memory: its maximum "
+                                "against what is granted), its load (load.points: Odoo and its own database apart, "
+                                "CPU in percent of the cores granted, memory in MiB), its requests (requests: totals, "
+                                "points, gaps, and for a developer up the 10 slowest pages, their paths without query "
+                                "string) and, for a developer up, the counts of its log over 24 hours and 7 days "
+                                "(log: errors, warnings, workers stopped for memory, database out of memory, retried "
+                                "conflicts, mail; api calls for the machine's tokens and the developers). period: 1h, "
+                                "24h (the default), 7d or 14d. A workspace's token never reads the machine's "
+                                "PostgreSQL shared by every database nor a host, and nobody an address, a query "
+                                "string or a text of the log.")
     async def api_instance_monitor(server: str = PathParam(description="The server's name"),
                                    role: str = PathParam(description="production or test"),
                                    period: str = Query(instancemonitor.DEFAULT_PERIOD,
@@ -33617,7 +33645,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
         inst = api_instance(me, server, role)
         if period not in instancemonitor.PERIODS:
             raise ApiError(400, "invalid_request", f"The period is one of {', '.join(instancemonitor.PERIODS)}")
-        return await instance_monitor_view(inst, period, me.scoped)
+        return await instance_monitor_view(inst, period, me.scoped, **monitor_audience(me))
 
     def api_pitr_instance(me: Principal, server: str, role: str) -> Instance:
         if role != "production":

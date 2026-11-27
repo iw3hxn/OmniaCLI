@@ -1618,18 +1618,27 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         """Whether an instance is well now and its load over a period (1h,
         24h, 7d or 14d), as its page's Monitoring tab shows it: verdict
         (state good, look with its causes, down, stopped or none: not
-        measured yet), the tiles (answered: percent of the monitor's checks;
-        response and failed: null with their reason until they are read from
-        Odoo's log; memory: its maximum against what is granted, MiB) and
-        load.points (Odoo and its own database apart: CPU in percent of the
-        cores granted, memory in MiB). Read only."""
+        measured yet; its causes: cpu, memory, workers, database, slow,
+        errors, killed), the tiles (answered: percent of the monitor's checks;
+        response: median and p95 in seconds, failed: percent of 5xx, both from
+        Odoo's log read every 5 minutes, null with their reason when there is
+        none; memory: its maximum against what is granted, MiB), load.points
+        (Odoo and its own database apart: CPU in percent of the cores granted,
+        memory in MiB), requests (totals, points, the slowest pages from the
+        developer up) and log (its counts over 24 hours and 7 days, from the
+        developer up; api for the machine's tokens and the developers). No
+        address, query string or text of the log. Read only."""
         need(ctx, "instance_monitor")
         if api.get("monitor") is None:
             raise ToolError("This OmniaCLI has no monitor of the instances through MCP")
         inst = instance(server_name, role, ctx)
         if period not in ("1h", "24h", "7d", "14d"):
             raise ToolError("The period is one of 1h, 24h, 7d, 14d")
-        return await api["monitor"](inst, period, view_of(ctx) is not None)
+        role = role_of(ctx)
+        # the slowest pages and the log from the developer up, the API calls for the machine's admins and the
+        # developers (UX-018 §6.1), as the page and the REST API say them
+        return await api["monitor"](inst, period, view_of(ctx) is not None, can_act=role in ("developer", "admin"),
+                                    api_row=role == "developer" or (role == "admin" and not scope_of(ctx)))
 
     @server.tool()
     async def database_report(server_name: str, role: str, ctx: Context) -> dict:
