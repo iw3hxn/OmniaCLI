@@ -474,7 +474,9 @@ def _feed_log(app, key="srv/production"):
               "p": {"/my/orders/<n>": [10, 40000, 9000], "/web/login": [5, 100, 30]}}]
     app.state.instance_history.add(key, spans + pages, now)
     folder = app.state.instance_history.folder(key)
-    (folder / instancelog.CURSOR).write_text(json.dumps({"inode": 1, "pos": 1, "at": now - 30, "state": None,
+    # read in the span of the newest point (30 s before now fell in the span before in the first 30 s of one, and
+    # the last 15 minutes left out the worker stopped for memory: a test that failed one time in five)
+    (folder / instancelog.CURSOR).write_text(json.dumps({"inode": 1, "pos": 1, "at": max(last, now - 30), "state": None,
                                                          "hours": {str(last // 3600 * 3600): {"/web/action": [2, 3000, 2000]}}}))
     app.state.instance_log.reads.pop(key, None)
 
