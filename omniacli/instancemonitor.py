@@ -41,7 +41,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import odoolog
+from . import instancemail, odoolog
 from .metrics import INTERVAL
 
 _logger = logging.getLogger(__name__)
@@ -737,20 +737,22 @@ def build(instance, period: str, *, sampler, history: InstanceHistory, state: di
           thresholds: dict, minutes: int, cores: float, memory_limit: float | None, workers: int | None,
           database: list[dict], where: str, host: str | None, workspace: list[dict] | None, customer: bool,
           log_read: dict | None = None, open_hours: dict | None = None, can_act: bool = True, api_row: bool = True,
-          now: float | None = None) -> dict:
+          mail_state: dict | None = None, now: float | None = None) -> dict:
     """What the page, the REST API and MCP answer of an instance's monitor
     over a period. customer: a workspace's people, who never read the
     machine's PostgreSQL shared by every database, nor a host. log_read: the
     last read of its log (instancelog.InstanceLog.read_state), open_hours:
     the pages of the hour in course; can_act: who reads the slowest pages
     and the log's counts (not a workspace's user); api_row: who reads the API
-    calls (the machine's admins and the developers)."""
+    calls (the machine's admins and the developers). mail_state: the last read of
+    its mail (instancemail.InstanceMail.state): the cause «Posta» for
+    everyone, the section for who acts."""
     now = now if now is not None else time.time()
     if period not in PERIODS:
         raise ValueError(f"the period is one of {', '.join(PERIODS)}")
     key = instance.key
     since = now - PERIODS[period]
-    found_kinds = history.kinds(key, min(since, now - 7 * 86400), (None, "log", "pages", "gap"))
+    found_kinds = history.kinds(key, min(since, now - 7 * 86400), (None, "log", "pages", "gap", "mail"))
     kept = [p for p in found_kinds[None] if p["t"] >= since]
     log = found_kinds["log"]
     started = history.started(key)
@@ -760,7 +762,8 @@ def build(instance, period: str, *, sampler, history: InstanceHistory, state: di
     read = log_read or {}
     found = verdict(state, live, cores=cores, memory_limit=memory_limit, workers=workers, thresholds=thresholds,
                     minutes=minutes, database=database, workspace=workspace, has_history=bool(kept),
-                    log=log_causes(log, read.get("at"), now), now=now)
+                    log=log_causes(log, read.get("at"), now)
+                    + instancemail.mail_causes(found_kinds["mail"], mail_state or {"state": "not_yet"}, now), now=now)
     points, interval = series(kept, live, list(sampler.machine), period, cores, sampler.cores, now)
     shared = where == "cluster"
     if customer or not shared:
@@ -794,6 +797,8 @@ def build(instance, period: str, *, sampler, history: InstanceHistory, state: di
     }
     if can_act:
         answer["log"] = log_counts(log, now, api_row, read.get("state"))
+        answer["mail"] = instancemail.mail_view(log, found_kinds["mail"], mail_state or {"state": "not_yet"}, period,
+                                                PERIODS[period], now, read.get("state"))
     return answer
 
 

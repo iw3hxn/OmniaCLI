@@ -128,6 +128,11 @@ command of the caller's, and runs docker with an environment of its own:
                                          pg_stat_statements when there), JSON
     pg-terminate <database service> <db> <pid>
                                          a query of that database stopped
+    pg-mail <database service> <db> <from id>
+                                         the mail of the instance's monitor
+                                         (MAIL_QUERY: received and not sent
+                                         by 5 minutes, counts only), read
+                                         only, 10 s at most, JSON
     pip-freeze <odoo service>            in the running service: the Python
                                          packages installed for its user
                                          (pip freeze --user)
@@ -302,6 +307,50 @@ PG_STATEMENTS = """SELECT coalesce(json_agg(s), '[]')::jsonb FROM (
  FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
  ORDER BY total_exec_time DESC LIMIT 20) s"""
 PID = re.compile(r"[1-9][0-9]{0,9}")
+# the mail of an instance's monitor (AD-019 19.3, slice 3): one JSON line of counts, never an address, a subject, a
+# body or an error's text. Read only, 10 s at most. mail_message only by its id after a bound (its ids are not in
+# the order of the commits: the caller passes the top of a read of 2 days before, or 0 and the bound is found by
+# the primary key, at most 2 days of it); mail_mail only in aggregates. The failures are counted by a fixed
+# class of their reason (MAIL_CLASSES): the reason itself stays in the database. The SELECT is the last statement:
+# psql 12 to 14 print only the last command's result of a -c string (a COMMIT last printed nothing; measured on
+# postgres:12/13/14-alpine, 28/11/2026); the transaction, which writes nothing, ends with the session
+MAIL_FROM_ID = re.compile(r"[0-9]{1,18}")
+MAIL_CLASSES = ("smtp_auth", "smtp_connect", "smtp_refused", "recipient", "sender", "spam", "other")
+MAIL_BOUND = ("(SELECT coalesce(max(o.id), 0) FROM (SELECT id FROM mail_message "
+              "WHERE create_date < (now() AT TIME ZONE 'UTC') - interval '2 days' ORDER BY id DESC LIMIT 1) o)")
+MAIL_CLASS = ("CASE WHEN failure_type IN ('mail_email_invalid', 'mail_email_missing', 'mail_bl', 'mail_optout', "
+              "'mail_dup') THEN 'recipient' "
+              "WHEN failure_type IN ('mail_from_invalid', 'mail_from_missing') THEN 'sender' "
+              "WHEN failure_type = 'mail_spam' THEN 'spam' "
+              # Odoo 19 leaves failure_type empty on the mail when the connection to the server fails (it sets it on
+              # the notifications only; lab4, 28/11/2026): the reason's words decide
+              "WHEN failure_reason ~* '(\\m53[0-8]\\M|authenticat|password|credential|username)' THEN 'smtp_auth' "
+              "WHEN failure_reason ~* '(SMTPRecipientsRefused|SMTPSenderRefused|SMTPDataError|relay)' "
+              "THEN 'smtp_refused' "
+              "WHEN failure_type = 'mail_smtp' OR failure_reason ~* '(connect|refused|timed? ?out|name or service"
+              "|name resolution|unreachable|no route|certificate|ssl|tls|disconnected)' THEN 'smtp_connect' "
+              "WHEN failure_reason ~* '(\\m[45][0-9][0-9]\\M)' THEN 'smtp_refused' ELSE 'other' END")
+MAIL_QUERY = ("BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = '10s'; "
+              "WITH lo AS (SELECT {bound}::bigint AS v) SELECT json_build_object("
+              "'version', (SELECT latest_version FROM ir_module_module WHERE name = 'base' LIMIT 1), "
+              "'top', (SELECT coalesce(max(id), 0) FROM mail_message), "
+              "'lo', (SELECT v FROM lo), "
+              "'received', (SELECT coalesce(json_agg(json_build_array(r.t, r.n, r.own) ORDER BY r.t), '[]') FROM ("
+              "SELECT floor(extract(epoch FROM m.create_date) / 300)::bigint * 300 AS t, count(*) AS n, "
+              "count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM mail_mail x WHERE x.mail_message_id = m.id)) AS own "
+              "FROM mail_message m WHERE m.id > (SELECT v FROM lo) AND m.message_type = 'email' GROUP BY 1) r), "
+              "'failed_now', (SELECT count(*) FROM mail_mail WHERE state = 'exception'), "
+              "'failed', (SELECT coalesce(json_agg(json_build_array(f.t, f.c, f.n) ORDER BY f.t, f.c), '[]') FROM ("
+              "SELECT floor(extract(epoch FROM write_date) / 300)::bigint * 300 AS t, " + MAIL_CLASS + " AS c, "
+              "count(*) AS n FROM mail_mail WHERE state = 'exception' "
+              "AND write_date >= (now() AT TIME ZONE 'UTC') - interval '2 days' GROUP BY 1, 2) f))::jsonb")
+
+
+def mail_query(from_id: int) -> str:
+    """MAIL_QUERY from the id from_id (0: the bound found by the primary key): a number, never the caller's text."""
+    return MAIL_QUERY.format(bound=str(int(from_id)) if int(from_id) > 0 else MAIL_BOUND)
+
+
 # the tuning of a dedicated database (UX-008 §6.2, AD-005): these parameters
 # only, each with the form its value takes. Whether one takes effect at once
 # or at a restart is PostgreSQL's (pg_settings.context), never written here.
@@ -369,7 +418,7 @@ MODULES_INFO_QUERY = (
     "FROM ir_module_module m ORDER BY m.name")
 WITH_ARGUMENTS = ("logs", "log-read", "version", "port", "dump", "load", "update", "psql", "init", "link-filestore", "login",
                   "setup", "options", "image", "verify", "pip-freeze",
-                  "pg-report", "pg-terminate", "neutralize", "pip-requirements", "terminal",
+                  "pg-report", "pg-terminate", "pg-mail", "neutralize", "pip-requirements", "terminal",
                   "mail-list", "mail-get", "mail-clear", "pg-settings", "pg-set", "pg-reset", "db-restart",
                   "modules", "modules-info", "mail-send", "mail-inbox", "update-list",
                   "next-update", "next-start", "next-stop", "next-state", "stop-service", "crons")
@@ -495,6 +544,9 @@ SCRIPTS = {
     # the SQL of the tuning (tune_sql()) on the input, never on a command line
     "pg-input": 'exec psql -X -At -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1"',
     # a query of the database stopped: its backend ended
+    # the mail's counts of the monitor (MAIL_QUERY): quiet, the JSON line only; a database that does not answer
+    # stops it in 5 s (a remote one, every round)
+    "pg-mail": 'PGCONNECT_TIMEOUT=5 exec psql -X -At -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2"',
     "pg-terminate": 'exec psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" '
                     '-c "SELECT pg_terminate_backend($2) FROM pg_stat_activity WHERE pid = $2 '
                     'AND datname = current_database()"',
@@ -546,7 +598,7 @@ SCRIPTS = {
 # run in its Odoo service as the environment's own role (the PG* Odoo has),
 # never as the cluster's superuser: what they read is that database's
 MACHINE_ODOO = "odoo"
-for _name in ("pg-modules", "psql", "pg-report", "pg-terminate"):
+for _name in ("pg-modules", "psql", "pg-report", "pg-terminate", "pg-mail"):
     SCRIPTS["machine-" + _name] = ODOO_DB + SCRIPTS[_name].replace(' -U "${POSTGRES_USER:-postgres}"', "")
 # the actions where Odoo drops and creates its database (CREATEDB, in them only)
 CREATES_DATABASE = ("load", "verify")
@@ -1018,6 +1070,12 @@ def commands(project: Path, action: str, args: list[str], major: int | None = No
             raise HelperError("usage: pg-terminate <service> <database> <pid>")
         name, prefix, options = db_target(project, args[0])
         return [_script(name, prefix + "pg-terminate", _database(args[1]), args[2], options=options)]
+    if action == "pg-mail":
+        # pg-mail <database service> <database> <from id>: the fixed query above, the id a number
+        if len(args) != 3 or not MAIL_FROM_ID.fullmatch(args[2]):
+            raise HelperError("usage: pg-mail <service> <database> <from id, a number>")
+        name, prefix, options = db_target(project, args[0])
+        return [_script(name, prefix + "pg-mail", _database(args[1]), mail_query(int(args[2])), options=options)]
     if action == "mail-list":
         # mail-list <start> <limit>: the caught messages, the newest first
         if len(args) != 2 or not all(a.isdigit() and len(a) <= 6 for a in args) \

@@ -126,6 +126,22 @@ async def messages(instance, every: bool = False, box: str = "") -> dict:
     return {"total": total, "messages": shown if every else shown[:FIRST], "boxes": boxes(rows), "box": box}
 
 
+async def held(instance, since: float) -> tuple[int, bool]:
+    """The caught messages since a time, for the monitor (AD-019 slice 3): (how many, whether the service lists
+    MAIL_LIMIT of them, all since then: there may be more). Only the number leaves here."""
+    found = _answer(await _ask(instance, "mail-list", "0", str(MAIL_LIMIT)))
+    rows = [m for m in found.get("messages") or [] if isinstance(m, dict)]
+    count = 0
+    for item in rows:
+        try:
+            moment = datetime.datetime.fromisoformat(str(item.get("Created") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if moment.tzinfo is not None and moment.timestamp() >= since:
+            count += 1
+    return count, len(rows) >= MAIL_LIMIT and count >= len(rows)
+
+
 async def message(instance, mail_id: str) -> dict:
     """One message as it was: from, to, cc, date, subject, its HTML and text
     bodies, the names (and sizes) of its attachments."""

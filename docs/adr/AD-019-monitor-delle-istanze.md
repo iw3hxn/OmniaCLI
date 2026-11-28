@@ -152,6 +152,23 @@ Prove sul lab (27/11/2026):
 - **Avvisi raggruppati**: `acme-odoo` e `acme-zipt` lente e con errori nella stessa lettura. Sono partite 2 e-mail (Mailpit di lab3), una «2 istanze sono lente» e una «2 istanze non riescono a rispondere a delle richieste», ciascuna con le due istanze. Una terza e-mail è partita 20 minuti dopo, solo per `acme-odoo` «(nuova)». La raffica di richieste veloci aveva diluito la quota delle lente sotto 1 su 20 per 3 letture, quindi `acme-odoo` era uscita dalla causa e poi ci è rientrata. Non è una ripetizione ogni 5 minuti.
 - **Criterio 12**, su lab4: un'istanza venv con `logfile` vuoto mostra «—» nel tempo di risposta e la frase di §6.2.
 
+## Fetta 3: posta (28/11/2026, lab4)
+
+Costruita sul branch `monitor-s3`. Codice: `instancemail.py` (la lettura, la causa, la sezione), `composehelper.MAIL_QUERY` e l'azione `pg-mail` del helper, `stagingmail.held`, `monitor.py` (l'avviso «mail»).
+
+- **La query** è una sola, fissa, in `BEGIN TRANSACTION READ ONLY` con `statement_timeout` 10 s. Il chiamante passa solo un numero (l'`id` da cui leggere). `mail_message` si legge solo per chiave primaria: `max(id)`, `id >` un limite, e nelle prime letture il limite trovato con `ORDER BY id DESC LIMIT 1` sui messaggi di più di 2 giorni. `mail_mail` solo in aggregati. Un test conta le letture e fallisce se una non è limitata.
+- **Gli ultimi 2 giorni si rileggono a ogni lettura**: il limite è l'`id` più alto letto 2 giorni prima. Una campata di 5 minuti si riscrive solo quando il suo conto cambia (anche a 0, se i messaggi sono stati cancellati).
+- **Odoo 16**: le ricevute escludono i messaggi con una riga di `mail_mail`. Dalla 17 le uscite sono `email_outgoing`.
+- **Le non partite si contano per classe del motivo**, mai con il suo testo: `smtp_auth` (il server rifiuta l'accesso), `smtp_connect` (il server non risponde), `smtp_refused` (il server rifiuta i messaggi), `recipient`, `sender`, `spam`, `other`. Odoo 19 lascia vuoto `failure_type` sulla mail quando la connessione al server fallisce: decidono le parole del motivo (misurato su lab4: un 535 era finito fra i messaggi rifiutati). Il testo del motivo non esce mai dal database, per nessuna persona: chi deve leggerlo lo trova in Odoo, Impostazioni › Tecnico › E-mail, ed è quello che dice il rimedio.
+- **Staging**: la causa «Posta» non c'è, perché la posta è trattenuta apposta. La sezione dice «Le e-mail di una staging sono trattenute: N trattenute nelle 24 ore», con N contato nel suo Mailpit; restano solo il numero e l'ora di arrivo.
+- **Costo**: 0,4-0,6 s a lettura, misurato con il helper, compreso il `docker exec` di `psql_options`. Si legge nella stessa coda del log, subito dopo.
+
+Prove sul lab (28/11/2026, lab4, Odoo 19, modulo `mail` installato per la prova):
+
+- **Il conto a mano**: su `acme-odoo` (database dedicato) 20 inviate, 2 respinte (da MAILER-DAEMON), 3 ricevute e 1 con un SMTP che rifiuta la password. Il monitor dice «Inviate 20 · non partite 1 · ricevute 4 · respinte 2». Il conto a mano: 20 nel Mailpit di prova e 20 righe «successfully sent» nel log; 2 righe «Routing mail … bounce»; 1 `mail_mail` in eccezione con 535; 4 `mail_message` di tipo email, cioè le 3 più 1 creata all'installazione di `mail`.
+- **Un avviso solo** per due istanze con l'SMTP che rifiuta l'accesso: `acme-odoo` e `acme-mach`, quest'ultima sul cluster della macchina. È partita 1 e-mail, «2 istanze hanno e-mail non partite», con le due righe «il server di posta rifiuta l'accesso (nuova)». Nessuna e-mail nelle letture dopo, nemmeno dopo due riavvii del pannello.
+- **Criterio 13**: su `acme-mach-stg-20261122`, con 6 e-mail mandate dalla staging, la sezione dice «Le e-mail di una staging sono trattenute: 6 trattenute nelle 24 ore» (il Mailpit della staging ne ha 6), e la causa Posta non c'è.
+
 ## 8. Vincoli per il dev-lead
 
 1. Nessun demone e nessuna dipendenza. Le letture vanno in una coda sola, sfalsate.

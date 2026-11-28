@@ -71,24 +71,33 @@ AGENT_RELAY = "agent-relay"
 PROBE = "omniacli-monitor"
 # the causes of an instance read in its log that are told (Carlo, 26/11/2026: at once, grouped by cause); an
 # instance leaves a cause after CAUSE_CLEAR rounds of the log (5 minutes each) without it
-ALERTED_CAUSES = ("slow", "errors", "killed")
+ALERTED_CAUSES = ("slow", "errors", "killed", "mail")
 CAUSE_CLEAR = 3
 CAUSE_SUBJECT_ONE = {"slow": "{key} is slow", "errors": "{key} fails requests",
-                     "killed": "{key} had workers stopped for memory"}
+                     "killed": "{key} had workers stopped for memory", "mail": "{key} has mail not sent"}
 CAUSE_SUBJECTS = {"slow": "{n} instances are slow", "errors": "{n} instances fail requests",
-                  "killed": "{n} instances had workers stopped for memory"}
+                  "killed": "{n} instances had workers stopped for memory", "mail": "{n} instances have mail not sent"}
 CAUSE_HEADS = {"slow": "Slow: half the requests over 1 s, or 1 in 20 over 3 s, in the last 15 minutes.",
                "errors": "Failed requests: over 1% of them ended with an error, in the last 15 minutes.",
-               "killed": "Workers stopped for memory in the last 15 minutes: who was on them got an error."}
+               "killed": "Workers stopped for memory in the last 15 minutes: who was on them got an error.",
+               "mail": "Mail not sent in the last 24 hours: Odoo keeps it in its queue, in exception."}
 CAUSE_LINES = {"slow": "{key}: half within {median} s, 1 in 20 over {p95} s ({requests} requests)",
                "errors": "{key}: {percent}% failed ({failed} of {requests})",
-               "killed": "{key}: {count} workers stopped"}
+               "killed": "{key}: {count} workers stopped",
+               "mail": "{key}: {count} not sent, {reason}"}
+# the reason of the mail not sent, by the fixed class of its failure (composehelper.MAIL_CLASSES): never its text
+MAIL_REASONS = {"smtp_auth": "the mail server refuses the login", "smtp_connect": "the mail server does not answer",
+                "smtp_refused": "the mail server refuses the messages", "recipient": "addresses of recipients not valid",
+                "sender": "the sender's address not valid", "spam": "taken for spam", "other": "for another reason"}
 NEW_MARK = "(new)"
 
 
 def _cause_numbers(cause: dict) -> dict:
     """The numbers of a cause its message says, never a text of the log."""
-    return {k: cause.get(k) for k in ("median", "p95", "requests", "percent", "failed", "count")}
+    found = {k: cause.get(k) for k in ("median", "p95", "requests", "percent", "failed", "count")}
+    if cause.get("kind") == "mail":
+        found["reason"] = MAIL_REASONS.get(cause.get("reason"), MAIL_REASONS["other"])
+    return found
 
 
 def level_of(value: float, limits) -> str | None:

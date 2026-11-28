@@ -1619,14 +1619,18 @@ def create_mcp(settings: Settings, jobs: JobManager, updater: AutoUpdater, sampl
         24h, 7d or 14d), as its page's Monitoring tab shows it: verdict
         (state good, look with its causes, down, stopped or none: not
         measured yet; its causes: cpu, memory, workers, database, slow,
-        errors, killed), the tiles (answered: percent of the monitor's checks;
+        errors, killed, mail: e-mails not sent in 24 hours with the class of
+        their main reason), the tiles (answered: percent of the monitor's checks;
         response: median and p95 in seconds, failed: percent of 5xx, both from
         Odoo's log read every 5 minutes, null with their reason when there is
         none; memory: its maximum against what is granted, MiB), load.points
         (Odoo and its own database apart: CPU in percent of the cores granted,
         memory in MiB), requests (totals, points, the slowest pages from the
         developer up) and log (its counts over 24 hours and 7 days, from the
-        developer up; api for the machine's tokens and the developers). No
+        developer up; api for the machine's tokens and the developers) and
+        mail (from the developer up: sent and bounced from the log, received
+        and not sent from the database every 5 minutes, by 5 minutes, hour or
+        day; the failures by class, never their text; a staging's held). No
         address, query string or text of the log. Read only."""
         need(ctx, "instance_monitor")
         if api.get("monitor") is None:
