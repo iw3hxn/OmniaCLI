@@ -1584,6 +1584,8 @@ dialog.sd { --dialog-w: 560px; }
     // the mail (AD-019 slice 3)
     mail: {{ _("{count} e-mails not sent in the 24 hours: {reason}.") | tojson }},
     mailOther: {{ _("{count} e-mails not sent in the 24 hours.") | tojson }},
+    mailOne: {{ _("1 e-mail not sent in the 24 hours: {reason}.") | tojson }},
+    mailOtherOne: {{ _("1 e-mail not sent in the 24 hours.") | tojson }},
     mailReasons: {smtp_auth: {{ _("the mail server refuses the login") | tojson }},
                   smtp_connect: {{ _("the mail server does not answer") | tojson }},
                   smtp_refused: {{ _("the mail server refuses the messages") | tojson }},
@@ -1609,6 +1611,7 @@ dialog.sd { --dialog-w: 560px; }
                not_yet: {{ _("The mail is read every 5 minutes: the first numbers come within 5 minutes.") | tojson }}},
     mailLogNote: {{ _("The e-mails sent and bounced are counted from the log of Odoo, which is not read: see Requests.") | tojson }},
     mailNowFailed: {{ _("{n} e-mails wait in Odoo in exception now.") | tojson }},
+    mailNowFailedOne: {{ _("1 e-mail waits in Odoo in exception now.") | tojson }},
     mailByReason: {{ _("Not sent {period}, by reason: {list}.") | tojson }},
     mailPer: {"1h": {{ _("every 5 minutes") | tojson }}, "24h": {{ _("an hour") | tojson }}, "7d": {{ _("a day") | tojson }}, "14d": {{ _("a day") | tojson }}},
     sentSeries: {{ _("Sent e-mails") | tojson }}, notSentSeries: {{ _("E-mails not sent") | tojson }}, heldSeries: {{ _("Held e-mails") | tojson }},
@@ -1678,8 +1681,8 @@ dialog.sd { --dialog-w: 560px; }
     if (c.kind === "cpu") return fill(M.cpu, {value: c.value, cores: num(c.cores, 1), minutes: c.minutes, threshold: c.threshold});
     if (c.kind === "memory") return fill(c.workspace ? M.memoryShared : M.memory, {value: c.value, limit: mib(c.limit), minutes: c.minutes, threshold: c.threshold});
     if (c.kind === "workers") return fill(M.workers, {workers: c.workers, minutes: c.minutes});
-    if (c.kind === "mail") return c.reason && c.reason !== "other" ? fill(M.mail, {count: num(c.count, 0), reason: M.mailReasons[c.reason] || c.reason})
-      : fill(M.mailOther, {count: num(c.count, 0)});
+    if (c.kind === "mail") return c.reason && c.reason !== "other" ? fill(c.count === 1 ? M.mailOne : M.mail, {count: num(c.count, 0), reason: M.mailReasons[c.reason] || c.reason})
+      : fill(c.count === 1 ? M.mailOtherOne : M.mailOther, {count: num(c.count, 0)});
     if (c.what === "slow") return fill(M.dbSlow, {count: c.count, time: lasting(c.seconds || 0)});
     if (c.what === "connections") return fill(M.dbConnections, {count: c.count, max: c.max});
     if (c.what === "cache") return fill(M.dbCache, {value: num(c.value)});
@@ -1914,7 +1917,7 @@ dialog.sd { --dialog-w: 560px; }
     if (m.staging) lines.push(m.held === null || m.held === undefined ? M.mailHeldUnknown : fill(m.held_more ? M.mailHeldMore : M.mailHeld, {n: num(m.held, 0)}));
     if (m.source) lines.push(M.mailNote[m.source] || "");
     if (m.log_source && m.source !== "no_mail") lines.push(M.mailLogNote);
-    if (m.failed_now) lines.push(fill(M.mailNowFailed, {n: num(m.failed_now, 0)}));
+    if (m.failed_now) lines.push(m.failed_now === 1 ? M.mailNowFailedOne : fill(M.mailNowFailed, {n: num(m.failed_now, 0)}));
     note.textContent = lines.filter(Boolean).join(" ");
     note.hidden = !note.textContent;
     const dash = (v) => v === null || v === undefined ? "—" : num(v, 0);

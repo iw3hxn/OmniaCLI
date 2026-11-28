@@ -108,6 +108,11 @@ def test_the_helper_runs_the_fixed_query_with_a_number(tmp_path, monkeypatch):
     for bad in (["db", "main", "1; DROP TABLE x"], ["db", "main", "-1"], ["db", "main"], ["db", "main", "1" * 19]):
         with pytest.raises(composehelper.HelperError):
             composehelper.commands(tmp_path, "pg-mail", bad)
+    # a database on another machine (AD-003): from its Odoo service, as Odoo connects, the same fixed query
+    (tmp_path / ".env").write_text("DB_REMOTE=1\nDB_HOST=pg.example.net\nDB_PORT=5432\n")
+    [cmd] = composehelper.commands(tmp_path, "pg-mail", ["remote", "main", "5"])
+    assert cmd[:3] == ["exec", "-T", "odoo"] and cmd[-2:] == ["main", mail_query(5)]
+    assert cmd[cmd.index("-c") + 1] == composehelper.SCRIPTS["machine-pg-mail"]
 
 
 async def test_through_the_helper_and_through_psql_as_odoo(tmp_path, monkeypatch, env):

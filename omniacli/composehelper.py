@@ -320,11 +320,14 @@ MAIL_CLASS = ("CASE WHEN failure_type IN ('mail_email_invalid', 'mail_email_miss
               "'mail_dup') THEN 'recipient' "
               "WHEN failure_type IN ('mail_from_invalid', 'mail_from_missing') THEN 'sender' "
               "WHEN failure_type = 'mail_spam' THEN 'spam' "
-              "WHEN failure_type = 'mail_smtp' AND failure_reason ~* "
-              "'(\\m53[0-8]\\M|authenticat|password|credential|username)' THEN 'smtp_auth' "
-              "WHEN failure_type = 'mail_smtp' THEN 'smtp_connect' "
-              "WHEN failure_reason ~* '(SMTPRecipientsRefused|SMTPSenderRefused|SMTPDataError|relay|\\m5[0-9][0-9]\\M)' "
-              "THEN 'smtp_refused' ELSE 'other' END")
+              # Odoo 19 leaves failure_type empty on the mail when the connection to the server fails (it sets it on
+              # the notifications only; lab4, 28/11/2026): the reason's words decide
+              "WHEN failure_reason ~* '(\\m53[0-8]\\M|authenticat|password|credential|username)' THEN 'smtp_auth' "
+              "WHEN failure_reason ~* '(SMTPRecipientsRefused|SMTPSenderRefused|SMTPDataError|relay)' "
+              "THEN 'smtp_refused' "
+              "WHEN failure_type = 'mail_smtp' OR failure_reason ~* '(connect|refused|timed? ?out|name or service"
+              "|name resolution|unreachable|no route|certificate|ssl|tls|disconnected)' THEN 'smtp_connect' "
+              "WHEN failure_reason ~* '(\\m[45][0-9][0-9]\\M)' THEN 'smtp_refused' ELSE 'other' END")
 MAIL_QUERY = ("BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = '10s'; "
               "WITH lo AS (SELECT {bound}::bigint AS v) SELECT json_build_object("
               "'version', (SELECT latest_version FROM ir_module_module WHERE name = 'base' LIMIT 1), "
