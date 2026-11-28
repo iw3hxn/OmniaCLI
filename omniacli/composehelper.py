@@ -311,7 +311,9 @@ PID = re.compile(r"[1-9][0-9]{0,9}")
 # body or an error's text. Read only, 10 s at most. mail_message only by its id after a bound (its ids are not in
 # the order of the commits: the caller passes the top of a read of 2 days before, or 0 and the bound is found by
 # the primary key, at most 2 days of it); mail_mail only in aggregates. The failures are counted by a fixed
-# class of their reason (MAIL_CLASSES): the reason itself stays in the database
+# class of their reason (MAIL_CLASSES): the reason itself stays in the database. The SELECT is the last statement:
+# psql 12 to 14 print only the last command's result of a -c string (a COMMIT last printed nothing; measured on
+# postgres:12/13/14-alpine, 28/11/2026); the transaction, which writes nothing, ends with the session
 MAIL_FROM_ID = re.compile(r"[0-9]{1,18}")
 MAIL_CLASSES = ("smtp_auth", "smtp_connect", "smtp_refused", "recipient", "sender", "spam", "other")
 MAIL_BOUND = ("(SELECT coalesce(max(o.id), 0) FROM (SELECT id FROM mail_message "
@@ -341,7 +343,7 @@ MAIL_QUERY = ("BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = '10s';
               "'failed', (SELECT coalesce(json_agg(json_build_array(f.t, f.c, f.n) ORDER BY f.t, f.c), '[]') FROM ("
               "SELECT floor(extract(epoch FROM write_date) / 300)::bigint * 300 AS t, " + MAIL_CLASS + " AS c, "
               "count(*) AS n FROM mail_mail WHERE state = 'exception' "
-              "AND write_date >= (now() AT TIME ZONE 'UTC') - interval '2 days' GROUP BY 1, 2) f))::jsonb; COMMIT;")
+              "AND write_date >= (now() AT TIME ZONE 'UTC') - interval '2 days' GROUP BY 1, 2) f))::jsonb")
 
 
 def mail_query(from_id: int) -> str:
@@ -542,8 +544,9 @@ SCRIPTS = {
     # the SQL of the tuning (tune_sql()) on the input, never on a command line
     "pg-input": 'exec psql -X -At -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1"',
     # a query of the database stopped: its backend ended
-    # the mail's counts of the monitor (MAIL_QUERY): quiet, the JSON line only
-    "pg-mail": 'exec psql -X -At -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2"',
+    # the mail's counts of the monitor (MAIL_QUERY): quiet, the JSON line only; a database that does not answer
+    # stops it in 5 s (a remote one, every round)
+    "pg-mail": 'PGCONNECT_TIMEOUT=5 exec psql -X -At -q -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$1" -c "$2"',
     "pg-terminate": 'exec psql -X -At -U "${POSTGRES_USER:-postgres}" -d "$1" '
                     '-c "SELECT pg_terminate_backend($2) FROM pg_stat_activity WHERE pid = $2 '
                     'AND datname = current_database()"',

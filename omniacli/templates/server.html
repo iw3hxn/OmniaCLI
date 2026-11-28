@@ -1604,15 +1604,24 @@ dialog.sd { --dialog-w: 560px; }
     mailLine: {{ _("Sent {sent} · not sent {failed} · received {received} · bounced {bounced}") | tojson }},
     mailLineHeld: {{ _("Held {held} in the 24 hours · received {received}") | tojson }},
     mailHeld: {{ _("The e-mails of a staging are held: {n} held in the 24 hours.") | tojson }},
+    mailHeldOne: {{ _("The e-mails of a staging are held: 1 held in the 24 hours.") | tojson }},
     mailHeldMore: {{ _("The e-mails of a staging are held: at least {n} held in the 24 hours.") | tojson }},
     mailHeldUnknown: {{ _("The e-mails of a staging are held: they do not leave it.") | tojson }},
     mailNote: {no_mail: {{ _("The module Mail is not installed in its database: it sends and receives no e-mail.") | tojson }},
                unreadable: {{ _("Its database could not be read: the e-mails received and not sent are not counted.") | tojson }},
                not_yet: {{ _("The mail is read every 5 minutes: the first numbers come within 5 minutes.") | tojson }}},
     mailLogNote: {{ _("The e-mails sent and bounced are counted from the log of Odoo, which is not read: see Requests.") | tojson }},
-    mailNowFailed: {{ _("{n} e-mails wait in Odoo in exception now.") | tojson }},
-    mailNowFailedOne: {{ _("1 e-mail waits in Odoo in exception now.") | tojson }},
-    mailByReason: {{ _("Not sent {period}, by reason: {list}.") | tojson }},
+    mailNowFailed: {{ _("{n} e-mails were not sent and wait in Odoo.") | tojson }},
+    mailNowFailedOne: {{ _("1 e-mail was not sent and waits in Odoo.") | tojson }},
+    mailByReason: {{ _("Not sent {period}: {list}.") | tojson }},
+    // each reason with its number first, the same words for 1 and for many
+    mailBecause: {smtp_auth: {{ _("{n} because the mail server refuses the login") | tojson }},
+                  smtp_connect: {{ _("{n} because the mail server does not answer") | tojson }},
+                  smtp_refused: {{ _("{n} because the mail server refuses the messages") | tojson }},
+                  recipient: {{ _("{n} for addresses of recipients not valid") | tojson }},
+                  sender: {{ _("{n} for the sender's address not valid") | tojson }},
+                  spam: {{ _("{n} for spam") | tojson }},
+                  other: {{ _("{n} for another reason") | tojson }}},
     mailPer: {"1h": {{ _("every 5 minutes") | tojson }}, "24h": {{ _("an hour") | tojson }}, "7d": {{ _("a day") | tojson }}, "14d": {{ _("a day") | tojson }}},
     sentSeries: {{ _("Sent e-mails") | tojson }}, notSentSeries: {{ _("E-mails not sent") | tojson }}, heldSeries: {{ _("Held e-mails") | tojson }},
     receivedSeries: {{ _("Received e-mails") | tojson }}, bouncedSeries: {{ _("Bounced e-mails") | tojson }},
@@ -1914,7 +1923,8 @@ dialog.sd { --dialog-w: 560px; }
     const m = data.mail, t = m.total, when = M.periods[data.period], key = box.dataset.key;
     const note = fold.querySelector(".mon-mail-note"), body = fold.querySelector(".mon-mail-body");
     const lines = [];
-    if (m.staging) lines.push(m.held === null || m.held === undefined ? M.mailHeldUnknown : fill(m.held_more ? M.mailHeldMore : M.mailHeld, {n: num(m.held, 0)}));
+    if (m.staging) lines.push(m.held === null || m.held === undefined ? M.mailHeldUnknown
+      : m.held === 1 && !m.held_more ? M.mailHeldOne : fill(m.held_more ? M.mailHeldMore : M.mailHeld, {n: num(m.held, 0)}));
     if (m.source) lines.push(M.mailNote[m.source] || "");
     if (m.log_source && m.source !== "no_mail") lines.push(M.mailLogNote);
     if (m.failed_now) lines.push(m.failed_now === 1 ? M.mailNowFailedOne : fill(M.mailNowFailed, {n: num(m.failed_now, 0)}));
@@ -1943,7 +1953,7 @@ dialog.sd { --dialog-w: 560px; }
     OmniaCharts.legend(fold.querySelector('[data-mon-legend="mail-in"]'), [
       {label: M.receivedSeries, cls: "s1", value: dash(t.received)}, {label: M.bouncedSeries, cls: "mon-bounced", value: dash(t.bounced)}]);
     const reasons = fold.querySelector(".mon-mail-reasons");
-    const listed = Object.entries(m.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${M.mailReasons[k] || k} ${num(n, 0)}`);
+    const listed = Object.entries(m.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => fill(M.mailBecause[k] || M.mailBecause.other, {n: num(n, 0)}));
     reasons.textContent = listed.length ? fill(M.mailByReason, {period: when, list: listed.join(" · ")}) : "";
     reasons.hidden = !listed.length;
   }

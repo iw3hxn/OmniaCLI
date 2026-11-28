@@ -82,7 +82,7 @@ def test_no_query_on_the_mail_without_an_id_range_an_aggregate_or_a_limit(from_i
     error's text is selected (the reason is only matched, inside the class)."""
     sql = mail_query(from_id)
     assert sql.startswith("BEGIN TRANSACTION READ ONLY; SET LOCAL statement_timeout = '10s'; ")
-    assert sql.endswith("COMMIT;") and sql.count(";") == 4
+    assert sql.endswith("::jsonb") and sql.count(";") == 2
     assert _bounded(sql) == (6 if not from_id else 5)
     # the count itself catches one that is not: the received without their id range, a count of every message
     with pytest.raises(AssertionError):
@@ -296,7 +296,7 @@ async def test_one_alert_for_two_instances_with_the_smtp_down(tmp_path, monkeypa
         await mon.instance_causes({"a1/production": [down], "a2/production": [other]})
     assert len(sent) == 1
     said = notify.said("it", "\n".join([monitor_module.CAUSE_HEADS["mail"], sent[0]["text"].splitlines()[1]]))
-    assert "E-mail non partite nelle ultime 24 ore" in said and "12 non partite, il server di posta rifiuta l'accesso" in said
+    assert "E-mail non partite nelle ultime 24 ore" in said and "e-mail non partite 12, il server di posta rifiuta l'accesso" in said
     assert notify.said("it", "OmniaCLI m: [warning] 2 instances have mail not sent") == \
         "OmniaCLI m: [avviso] 2 istanze hanno e-mail non partite"
 
@@ -446,3 +446,98 @@ async def test_a_staging_says_its_mail_is_held(client, monkeypatch):  # noqa: F8
     page = (await client.get("/api/servers/srv/production/monitor", headers={"Authorization": AUTH})).json()
     assert page["mail"]["staging"] and page["mail"]["held"] == 14
     assert not any(c["kind"] == "mail" for c in page["verdict"]["causes"])
+
+
+# --- after the review of 4118858 --------------------------------------------------------------------------------------
+
+def _statements(sql: str) -> list[str]:
+    """The statements of sql split at its semicolons outside quotes and parentheses."""
+    found, depth, quoted, start = [], 0, False, 0
+    for i, c in enumerate(sql):
+        if c == "'":
+            quoted = not quoted
+        elif not quoted and c in "()":
+            depth += 1 if c == "(" else -1
+        elif not quoted and c == ";" and depth == 0:
+            found.append(sql[start:i].strip())
+            start = i + 1
+    if sql[start:].strip():
+        found.append(sql[start:].strip())
+    return found
+
+
+@pytest.mark.parametrize("from_id", [0, 81234])
+def test_the_json_is_the_last_statement_for_psql_12_to_14(from_id):
+    """psql 12, 13 and 14 print only the result of the last command of a -c string (15 prints them all): with a
+    COMMIT last they printed nothing, exit 0, and every database they read was «unreadable» for good (measured on
+    postgres:12/13/14-alpine, 28/11/2026). The SELECT is the last statement; the read-only transaction ends with the
+    session, rolled back (it wrote nothing)."""
+    statements = _statements(mail_query(from_id))
+    assert statements[0] == "BEGIN TRANSACTION READ ONLY" and statements[1] == "SET LOCAL statement_timeout = '10s'"
+    assert statements[-1].startswith("WITH lo AS") and statements[-1].endswith("::jsonb") and len(statements) == 3
+    # what psql 14 prints of it: the last command's result only
+    found = {"version": "14.0", "top": 3, "lo": 0, "received": [], "failed_now": 0, "failed": []}
+    assert instancemail.answer(json.dumps(found)) == found
+    with pytest.raises(instancemail.JobFailed):
+        instancemail.answer("")  # nothing printed is never a read of 0
+
+
+def test_an_unreachable_database_costs_seconds_not_a_round():
+    """A database that does not answer (a remote one, a cluster's Odoo stopped) stops psql in 5 s, not at the whole
+    command's timeout, every round: the helper's script and a venv's psql both say so."""
+    assert "PGCONNECT_TIMEOUT=5" in composehelper.SCRIPTS["pg-mail"]
+    assert "PGCONNECT_TIMEOUT=5" in composehelper.SCRIPTS["machine-pg-mail"]
+    assert instancemail.TIMEOUT <= 20 and instancemail.CONNECT == "connect_timeout=5"
+
+
+async def test_a_venv_s_psql_waits_5_seconds_for_its_database(monkeypatch, env):
+    asked = []
+
+    async def capture(cmd, env=None, timeout=None, **kw):
+        asked.append((cmd, timeout))
+        return 0, json.dumps({"version": "19.0", "top": 1, "received": [], "failed_now": 0, "failed": []})
+    monkeypatch.setattr(ops, "capture", capture)
+    await instancemail.ask(env["settings"].servers["srv"].test, 3)
+    cmd, timeout = asked[-1]
+    assert cmd[cmd.index("-d") + 1] == "connect_timeout=5" and timeout <= 20
+
+
+async def test_a_database_not_read_for_a_while_is_never_a_new_alert(tmp_path, monkeypatch):
+    """The failures of the 24 hours are in the history: while the database is not read (its Odoo stopped, a remote
+    database unreachable) the cause stays, from what was read, and the instance is not told again when it reads."""
+    sent = []
+
+    async def send(options, recipients, subject, text, event=None, language=""):
+        sent.append(subject)
+        return []
+    monkeypatch.setattr(notify, "send", send)
+    mon, settings = _monitor(tmp_path)
+    mon.settings, mon.causes = settings, {}
+    points = [_failed(NOW - 600, smtp_auth=4)]
+    read = {"state": None, "staging": False}
+    unreadable = {"state": instancemail.UNREADABLE, "staging": False}
+    await mon.instance_causes({"a1/production": instancemail.mail_causes(points, read, NOW)})
+    for i in range(1, 6):  # 25 minutes without a read
+        causes = instancemail.mail_causes(points, unreadable, NOW + 300 * i)
+        assert causes and causes[0]["count"] == 4
+        await mon.instance_causes({"a1/production": causes})
+    await mon.instance_causes({"a1/production": instancemail.mail_causes(points, read, NOW + 1800)})
+    assert len(sent) == 1
+    assert instancemail.mail_causes(points, {"state": instancemail.NO_MAIL, "staging": False}, NOW) == []
+
+
+def test_the_words_of_the_mail_said_plainly():
+    """On the page, in Italian: what waits in Odoo said as an e-mail not sent, the reasons with their number first,
+    one e-mail and one held said in the singular."""
+    it = json.loads((Path(im.__file__).parent / "i18n" / "it" / "server.json").read_text(encoding="utf-8"))
+    assert it["1 e-mail was not sent and waits in Odoo."] == "1 e-mail non è partita e aspetta in Odoo."
+    assert it["{n} e-mails were not sent and wait in Odoo."] == "{n} e-mail non sono partite e aspettano in Odoo."
+    assert it["Not sent {period}: {list}."] == "Non partite {period}: {list}."
+    assert it["{n} because the mail server refuses the login"] == "{n} perché il server di posta rifiuta l'accesso"
+    assert it["The e-mails of a staging are held: 1 held in the 24 hours."] == \
+        "Le e-mail di una staging sono trattenute: 1 trattenuta nelle 24 ore."
+    template = (Path(im.__file__).parent / "templates" / "server.html").read_text(encoding="utf-8")
+    for gone in ("e-mails wait in Odoo in exception now", "Not sent {period}, by reason: {list}."):
+        assert gone not in template
+    for kind in MAIL_CLASSES:
+        assert re.search(rf"{kind}: \{{\{{ _\(\"\{{n\}} ", template), kind

@@ -41,7 +41,8 @@ _logger = logging.getLogger(__name__)
 FILE = "mail.json"
 SPAN = 300
 REREAD = 2 * 86400  # the days read again at every read (mail_message's ids are not in the order of the commits)
-TIMEOUT = 40  # the whole command (docker exec and psql); the query itself stops at 10 s
+TIMEOUT = 20  # the whole command (docker exec and psql); the query itself stops at 10 s, the connection at 5 s
+CONNECT = "connect_timeout=5"  # a venv's psql: its database named by PGDATABASE, as Odoo connects
 # why there is no count of the database: told as a sentence, never a zero
 NO_MAIL = "no_mail"  # the module mail is not installed
 UNREADABLE = "unreadable"
@@ -73,7 +74,8 @@ async def ask(instance, from_id: int) -> dict:
     if env is None:
         code, out = await ops.capture(cmd, timeout=TIMEOUT)
     else:
-        code, out = await ops.capture([*cmd, "-X", "-At", "-q", "-v", "ON_ERROR_STOP=1", "-c", mail_query(from_id)],
+        code, out = await ops.capture([*cmd, "-X", "-At", "-q", "-v", "ON_ERROR_STOP=1", "-d", CONNECT,
+                                       "-c", mail_query(from_id)],
                                       env=env, timeout=TIMEOUT)
     if code:
         answer(out)  # NoMail when it is that
@@ -203,8 +205,10 @@ def main_reason(classes: dict) -> str | None:
 
 def mail_causes(points: list[dict], state: dict, now: float) -> list[dict]:
     """The cause «Posta» (UX-018 §3): at least 1 e-mail not sent in the last 24 hours, with its main reason; none for
-    a staging (its mail is held on purpose) or when the database is not read."""
-    if state.get("staging") or state.get("state") is not None:
+    a staging (its mail is held on purpose) or a database without mail. While the database is not read (its Odoo
+    stopped, a remote database unreachable) the cause is what was read last: the same failures never come back as
+    new, and alerted again, when it reads again."""
+    if state.get("staging") or state.get("state") == NO_MAIL:
         return []
     day = [p for p in points if p["t"] >= now - DAY]
     count = sum(int(p.get("mx") or 0) for p in day)
