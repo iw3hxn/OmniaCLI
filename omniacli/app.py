@@ -165,7 +165,7 @@ from .logtail import read_since
 from .metrics import Sampler
 from . import metricshistory
 from .metricshistory import MetricsHistory, MetricsRecorder
-from . import instancelog, instancemonitor
+from . import instancelog, instancemail, instancemonitor
 from .scheduler import AutoUpdater
 from .sessions import COOKIE, LIFETIME, LoginLimiter, SessionStore, device
 from .sessions import _digest as _digest_session, sid
@@ -776,9 +776,21 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     instance_log = instancelog.InstanceLog(settings, instance_history, measured=lambda key: key.endswith("/production"),
                                            role_state=workspacehelper.role_state,
                                            told=lambda found, measured: monitor.instance_causes(found, measured))
+    # their mail (AD-019 slice 3): received and not sent from their database, in the same queue right after the
+    # log; a staging's mail is held: its caught mail counted (is_staging and staging_mail are defined further down)
+
+    async def held_mail(instance, since):
+        caught = staging_mail(instance.server)
+        return await stagingmail.held(caught, since) if caught is not None else None
+
+    instance_mail = instancemail.InstanceMail(instance_history, staging=lambda key: is_staging(key.partition("/")[0]),
+                                              held=held_mail)
+    instance_log.mail = instance_mail
     instance_log.causes = lambda key, now=None: instancemonitor.log_causes(
         instance_history.points(key, (now or time.time()) - 1800, "log"), instance_log.read_state(key).get("at"),
-        now or time.time())
+        now or time.time()) + instancemail.mail_causes(
+        instance_history.points(key, (now or time.time()) - instancemail.DAY - 300, "mail"),
+        instance_mail.state(key), now or time.time())
     jobs.watchers.append(instance_log)
     link_clients = LinkClients(link_transport)
     # the links through SSH: their ssh -L, and OmniaCLI's key, next to the links file
@@ -1820,6 +1832,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
     app.state.load_history, app.state.load_recorder = load_history, load_recorder
     app.state.instance_history, app.state.instance_recorder = instance_history, instance_recorder
     app.state.instance_log = instance_log
+    app.state.instance_mail = instance_mail
     app.state.access_log = access_log
     app.state.tunnels = tunnels
     app.state.ssh_tunnels = ssh_tunnels
@@ -3977,7 +3990,7 @@ def create_app(settings: Settings, link_transport: httpx.AsyncBaseTransport | No
             workers=monitor_workers(instance), database=database, where=where, host=host,
             workspace=list(sampler.workspaces.get(ws_name, ())) if ws_name else None, customer=customer,
             log_read=instance_log.read_state(instance.key), open_hours=instance_log.open_spans(instance.key)["hours"],
-            can_act=can_act, api_row=api_row)
+            can_act=can_act, api_row=api_row, mail_state=instance_mail.state(instance.key))
 
     def monitor_audience(me: Principal) -> dict:
         """What a person or a token reads of the monitor (UX-018 §6.1): the slowest pages and the log from the

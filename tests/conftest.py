@@ -113,6 +113,23 @@ def no_root_helper_for_the_log(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def no_root_helper_for_the_mail(monkeypatch, request):
+    """The monitor's read of an instance's mail (AD-019 slice 3, in the round of the logs) never runs the real root
+    helper nor psql in the tests, nor a staging's count of its caught mail; the tests of the mail itself keep them."""
+    if request.module.__name__.rsplit(".", 1)[-1] == "test_instance_mail":
+        return
+    from omniacli import instancemail, stagingmail
+
+    async def no_database(instance, from_id):
+        raise OSError("no root helper in the tests")
+
+    async def no_mailpit(instance, since):
+        raise OSError("no root helper in the tests")
+    monkeypatch.setattr(instancemail, "ask", no_database)
+    monkeypatch.setattr(stagingmail, "held", no_mailpit)
+
+
+@pytest.fixture(autouse=True)
 def login_path_passed(monkeypatch):
     """The instances' nginx pass Log in as's path here (no network in the tests)."""
     from omniacli import loginas

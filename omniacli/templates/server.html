@@ -755,6 +755,21 @@ dialog.sd { --dialog-w: 560px; }
   </details>
   {% endif %}
   {% if can_act %}
+  {# its mail (AD-019 slice 3): sent and bounced from the log, received and not sent from its database; a staging's
+     is held; the reasons of the failures by class, never their text #}
+  <details class="mon-section" data-mon="mail">
+    <summary title="{{ _('The e-mails its Odoo sent, could not send, received and got back, over the period') }}"><span class="mon-title">{{ _("Mail") }}</span> <span class="muted mon-line" data-mon-line="mail"></span></summary>
+    <p class="muted mon-mail-note" hidden></p>
+    <div class="mon-mail-body">
+      <h3 class="chart-title">{{ _("Outgoing e-mails") }} <span class="muted mon-mail-per"></span></h3>
+      <div class="chart-box"><svg class="chart" data-mon-chart="mail-out" role="img" aria-label="{{ _('Outgoing e-mails of {key}', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
+      <div class="chart-legend" data-mon-legend="mail-out"></div>
+      <h3 class="chart-title">{{ _("Incoming e-mails") }} <span class="muted mon-mail-per"></span></h3>
+      <div class="chart-box"><svg class="chart" data-mon-chart="mail-in" role="img" aria-label="{{ _('Incoming e-mails of {key}', key=inst.key) }}"></svg><div class="chart-tip" hidden></div></div>
+      <div class="chart-legend" data-mon-legend="mail-in"></div>
+      <p class="muted mon-mail-reasons" hidden></p>
+    </div>
+  </details>
   {# the counts of its log over 24 hours and 7 days; each number opens the Log tab on them #}
   <details class="mon-section" data-mon="log" data-log-tab="{{ 'no' if denied.logs else 'yes' }}">
     <summary title="{{ _('How many errors, warnings, workers stopped for memory and conflicts its log has, over 24 hours and 7 days') }}"><span class="mon-title">{{ _("The log of Odoo") }}</span> <span class="muted mon-line" data-mon-line="log"></span></summary>
@@ -768,7 +783,7 @@ dialog.sd { --dialog-w: 560px; }
 </section>
 <style>
 .mon-head { flex-wrap: wrap; gap: 8px 16px; }
-.mon-req-note, .mon-log-note, .mon-log-zero { margin: 8px 0; font-size: var(--fs-14); line-height: var(--lh-20); }
+.mon-req-note, .mon-log-note, .mon-log-zero, .mon-mail-note, .mon-mail-reasons { margin: 8px 0; font-size: var(--fs-14); line-height: var(--lh-20); }
 .mon-log-table { width: auto; min-width: 280px; }
 .mon-log-table td, .mon-log-table th { padding: 4px 12px 4px 0; text-align: left; }
 .mon-log-table td.n, .mon-log-table th + th { text-align: right; font-variant-numeric: tabular-nums; }
@@ -776,6 +791,8 @@ dialog.sd { --dialog-w: 560px; }
 .mon-pages td.path { word-break: break-all; font-family: var(--mono); font-size: var(--fs-12); line-height: var(--lh-18); }
 .chart-line.mon-p95 { stroke: var(--cat-3); } .key.mon-p95 { background: var(--cat-3); }
 .chart-line.mon-failed { stroke: var(--err); } .key.mon-failed { background: var(--err); }
+.chart-line.mon-bounced { stroke: var(--cat-3); } .key.mon-bounced { background: var(--cat-3); }
+.mon-mail-per { font-weight: var(--fw-regular); font-size: var(--fs-14); line-height: var(--lh-20); }
 .mon-head h2 { margin: 0; }
 .mon-period { margin: 0; }
 .mon-period button { min-height: 36px; }
@@ -1564,6 +1581,40 @@ dialog.sd { --dialog-w: 560px; }
     logWhy: {no_file: {{ _("not counted: Odoo writes no log file") | tojson }},
               unreadable: {{ _("not counted: its log could not be read") | tojson }},
               not_yet: {{ _("the first counts within 5 minutes") | tojson }}},
+    // the mail (AD-019 slice 3)
+    mail: {{ _("{count} e-mails not sent in the 24 hours: {reason}.") | tojson }},
+    mailOther: {{ _("{count} e-mails not sent in the 24 hours.") | tojson }},
+    mailReasons: {smtp_auth: {{ _("the mail server refuses the login") | tojson }},
+                  smtp_connect: {{ _("the mail server does not answer") | tojson }},
+                  smtp_refused: {{ _("the mail server refuses the messages") | tojson }},
+                  recipient: {{ _("addresses of recipients not valid") | tojson }},
+                  sender: {{ _("the sender's address not valid") | tojson }}, spam: {{ _("taken for spam") | tojson }},
+                  other: {{ _("for another reason") | tojson }}},
+    mailRemedy: {
+      smtp: {machine: {{ _("Check the outgoing mail server: Settings › Options of Odoo (smtp_*), or its outgoing mail servers in Odoo.") | tojson }},
+             customer: {{ _("Check the outgoing mail server in Settings › Options of Odoo or in Odoo; if it is right, ask your mail provider.") | tojson }},
+             acts: {{ _("Check the outgoing mail server in Settings › Options of Odoo or in Odoo; if it is right, ask the administrator of the machine.") | tojson }}},
+      address: {machine: {{ _("The e-mails are in Odoo, Settings › Technical › Emails, with their reason.") | tojson }},
+                customer: {{ _("The e-mails are in Odoo, Settings › Technical › Emails, with their reason.") | tojson }},
+                acts: {{ _("The e-mails are in Odoo, Settings › Technical › Emails, with their reason.") | tojson }}},
+    },
+    openMail: {{ _("Mail ▸") | tojson }},
+    mailLine: {{ _("Sent {sent} · not sent {failed} · received {received} · bounced {bounced}") | tojson }},
+    mailLineHeld: {{ _("Held {held} in the 24 hours · received {received}") | tojson }},
+    mailHeld: {{ _("The e-mails of a staging are held: {n} held in the 24 hours.") | tojson }},
+    mailHeldMore: {{ _("The e-mails of a staging are held: at least {n} held in the 24 hours.") | tojson }},
+    mailHeldUnknown: {{ _("The e-mails of a staging are held: they do not leave it.") | tojson }},
+    mailNote: {no_mail: {{ _("The module Mail is not installed in its database: it sends and receives no e-mail.") | tojson }},
+               unreadable: {{ _("Its database could not be read: the e-mails received and not sent are not counted.") | tojson }},
+               not_yet: {{ _("The mail is read every 5 minutes: the first numbers come within 5 minutes.") | tojson }}},
+    mailLogNote: {{ _("The e-mails sent and bounced are counted from the log of Odoo, which is not read: see Requests.") | tojson }},
+    mailNowFailed: {{ _("{n} e-mails wait in Odoo in exception now.") | tojson }},
+    mailByReason: {{ _("Not sent {period}, by reason: {list}.") | tojson }},
+    mailPer: {"1h": {{ _("every 5 minutes") | tojson }}, "24h": {{ _("an hour") | tojson }}, "7d": {{ _("a day") | tojson }}, "14d": {{ _("a day") | tojson }}},
+    sentSeries: {{ _("Sent e-mails") | tojson }}, notSentSeries: {{ _("E-mails not sent") | tojson }}, heldSeries: {{ _("Held e-mails") | tojson }},
+    receivedSeries: {{ _("Received e-mails") | tojson }}, bouncedSeries: {{ _("Bounced e-mails") | tojson }},
+    mailOutLabel: {{ _("Outgoing e-mails of {key} {period}: {sent} sent, {failed} not sent") | tojson }},
+    mailInLabel: {{ _("Incoming e-mails of {key} {period}: {received} received, {bounced} bounced") | tojson }},
     logNote: {no_file: {{ _("Its counts come from the log of Odoo, which this instance does not write in a file.") | tojson }},
               unreadable: {{ _("The log of Odoo could not be read: the requests and its counts are not told.") | tojson }},
               not_yet: {{ _("The log of Odoo is read every 5 minutes: the first numbers come within 5 minutes.") | tojson }}},
@@ -1591,7 +1642,7 @@ dialog.sd { --dialog-w: 560px; }
   function opener(name) {
     const fold = section(name);
     if (!fold) return null;
-    const words = {load: M.openLoad, database: M.openDatabase, requests: M.openRequests, log: M.openLog};
+    const words = {load: M.openLoad, database: M.openDatabase, requests: M.openRequests, log: M.openLog, mail: M.openMail};
     const a = Object.assign(document.createElement("a"), {href: "#monitor", textContent: words[name] || name, title: M.openTitle});
     a.addEventListener("click", (ev) => { ev.preventDefault(); fold.open = true; fold.scrollIntoView({block: "start"}); });
     return a;
@@ -1627,6 +1678,8 @@ dialog.sd { --dialog-w: 560px; }
     if (c.kind === "cpu") return fill(M.cpu, {value: c.value, cores: num(c.cores, 1), minutes: c.minutes, threshold: c.threshold});
     if (c.kind === "memory") return fill(c.workspace ? M.memoryShared : M.memory, {value: c.value, limit: mib(c.limit), minutes: c.minutes, threshold: c.threshold});
     if (c.kind === "workers") return fill(M.workers, {workers: c.workers, minutes: c.minutes});
+    if (c.kind === "mail") return c.reason && c.reason !== "other" ? fill(M.mail, {count: num(c.count, 0), reason: M.mailReasons[c.reason] || c.reason})
+      : fill(M.mailOther, {count: num(c.count, 0)});
     if (c.what === "slow") return fill(M.dbSlow, {count: c.count, time: lasting(c.seconds || 0)});
     if (c.what === "connections") return fill(M.dbConnections, {count: c.count, max: c.max});
     if (c.what === "cache") return fill(M.dbCache, {value: num(c.value)});
@@ -1645,7 +1698,7 @@ dialog.sd { --dialog-w: 560px; }
     const items = v.causes.map((c, i) => {
       const li = document.createElement("li");
       li.append(causeText(c));
-      const remedy = (M.remedy[c.kind] || {})[who];
+      const remedy = c.kind === "mail" ? (M.mailRemedy[c.smtp ? "smtp" : "address"] || {})[who] : (M.remedy[c.kind] || {})[who];
       if (remedy) li.append(" ", Object.assign(document.createElement("span"), {className: "mon-remedy", textContent: remedy}));
       const link = opener(c.section);
       if (link) li.append(" ", link);
@@ -1851,6 +1904,47 @@ dialog.sd { --dialog-w: 560px; }
     zero.hidden = !zeros.length;
   }
 
+  // Mail: what left, what did not, what came in and what came back; a staging's held (UX-018 §5, §6.2)
+  function drawMail(data) {
+    const fold = section("mail");
+    if (!fold || !data.mail) return;
+    const m = data.mail, t = m.total, when = M.periods[data.period], key = box.dataset.key;
+    const note = fold.querySelector(".mon-mail-note"), body = fold.querySelector(".mon-mail-body");
+    const lines = [];
+    if (m.staging) lines.push(m.held === null || m.held === undefined ? M.mailHeldUnknown : fill(m.held_more ? M.mailHeldMore : M.mailHeld, {n: num(m.held, 0)}));
+    if (m.source) lines.push(M.mailNote[m.source] || "");
+    if (m.log_source && m.source !== "no_mail") lines.push(M.mailLogNote);
+    if (m.failed_now) lines.push(fill(M.mailNowFailed, {n: num(m.failed_now, 0)}));
+    note.textContent = lines.filter(Boolean).join(" ");
+    note.hidden = !note.textContent;
+    const dash = (v) => v === null || v === undefined ? "—" : num(v, 0);
+    const line = fold.querySelector('[data-mon-line="mail"]');
+    line.textContent = m.source === "no_mail" ? M.mailNote.no_mail
+      : m.staging ? fill(M.mailLineHeld, {held: dash(m.held), received: dash(t.received)})
+      : fill(M.mailLine, {sent: dash(t.sent), failed: dash(t.failed), received: dash(t.received), bounced: dash(t.bounced)});
+    body.hidden = m.source === "no_mail" || (m.source && m.log_source) || !(m.points || []).length;
+    if (body.hidden) return;
+    for (const per of fold.querySelectorAll(".mon-mail-per")) per.textContent = M.mailPer[data.period];
+    const span = {"1h": 3600, "24h": 86400, "7d": 604800, "14d": 1209600}[data.period], long = data.period !== "1h";
+    const opts = {gap: m.width * 2.5, from: data.now - span, to: data.now, when: long ? day : at, format: (v) => v.toFixed(0), minMax: 4};
+    const sent = m.staging ? M.heldSeries : M.sentSeries;
+    const outSvg = fold.querySelector('[data-mon-chart="mail-out"]'), inSvg = fold.querySelector('[data-mon-chart="mail-in"]');
+    OmniaCharts.draw(outSvg, m.points, "sent", {...opts, unit: "", lines: [{cls: "mon-failed", value: (p) => p.failed}],
+      tip: (p) => `${sent} ${num(p.sent, 0)} · ${M.notSentSeries} ${num(p.failed, 0)}`});
+    OmniaCharts.draw(inSvg, m.points, "received", {...opts, unit: "", lines: [{cls: "mon-bounced", value: (p) => p.bounced}],
+      tip: (p) => `${M.receivedSeries} ${num(p.received, 0)} · ${M.bouncedSeries} ${num(p.bounced, 0)}`});
+    outSvg.setAttribute("aria-label", fill(M.mailOutLabel, {key, period: when, sent: dash(t.sent), failed: dash(t.failed)}));
+    inSvg.setAttribute("aria-label", fill(M.mailInLabel, {key, period: when, received: dash(t.received), bounced: dash(t.bounced)}));
+    OmniaCharts.legend(fold.querySelector('[data-mon-legend="mail-out"]'), [
+      {label: sent, cls: "s1", value: dash(t.sent)}, {label: M.notSentSeries, cls: "mon-failed", value: dash(t.failed)}]);
+    OmniaCharts.legend(fold.querySelector('[data-mon-legend="mail-in"]'), [
+      {label: M.receivedSeries, cls: "s1", value: dash(t.received)}, {label: M.bouncedSeries, cls: "mon-bounced", value: dash(t.bounced)}]);
+    const reasons = fold.querySelector(".mon-mail-reasons");
+    const listed = Object.entries(m.reasons || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${M.mailReasons[k] || k} ${num(n, 0)}`);
+    reasons.textContent = listed.length ? fill(M.mailByReason, {period: when, list: listed.join(" · ")}) : "";
+    reasons.hidden = !listed.length;
+  }
+
   async function load() {
     if (box.hidden) return;
     // a read in flight (the first can take seconds: its database's statistics) gives way to the new one, a
@@ -1874,6 +1968,7 @@ dialog.sd { --dialog-w: 560px; }
       drawLoad(data);
       drawRequests(data);
       drawLog(data);
+      drawMail(data);
       note.textContent = data.measured_from ? fill(M.measuredFrom, {time: whenText(new Date(data.measured_from * 1000))}) : "";
       note.hidden = !note.textContent;
     } catch (e) {

@@ -244,6 +244,9 @@ class InstanceLog:
         self.role_state = role_state
         self.told = told
         self.causes = None  # causes(key): the log's causes of now (instancemonitor.log_causes)
+        # the mail's reader (instancemail.InstanceMail): its counts read in the same queue, right after the log's,
+        # so its cause is in the same round's alerts (AD-019 slice 3)
+        self.mail = None
         self._locks: dict[str, asyncio.Lock] = {}
         self._task: asyncio.Task | None = None
         # {key: {"at": time, "state": None or a reason, "gap": [t, why]}}: the last read of each, for the page
@@ -355,6 +358,11 @@ class InstanceLog:
                 await self.read(inst, now)
             except Exception:  # noqa: BLE001 - one instance's log must not stop the others'
                 _logger.exception("monitor: the log of %s", inst.key)
+            if self.mail is not None:
+                try:
+                    await self.mail.read(inst, now)
+                except Exception:  # noqa: BLE001 - nor its mail
+                    _logger.exception("monitor: the mail of %s", inst.key)
             if self.causes is not None:
                 try:
                     causes[inst.key] = self.causes(inst.key, now)
